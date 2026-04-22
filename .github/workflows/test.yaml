@@ -39,3 +39,17 @@ jobs:
             echo "Detected SDK: $_sdk"
             xcodebuild -version
             xcrun simctl list runtimes
+        - name: Install Distributions
+          run: |
+            echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
+            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+            version=$(echo ${_sdk} | grep -oE '[0-9]+\.[0-9]+')
+            echo "$version"
+            if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+              echo "Distribution SDK is already present"
+            else
+              echo "Required SDK not available, Installing the verson ${_sdk}"
+              cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+              xcodebuild -downloadPlatform iOS -buildVersion $(version)
+              echo "Installed the distributions "
+            fi
