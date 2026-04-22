@@ -38,3 +38,4 @@ jobs:
             echo "SDK=${_sdk}" >> $GITHUB_ENV
             echo "Detected SDK: $_sdk"
             xcodebuild -version
+            xcrun simctl list runtimes
