@@ -188,3 +188,41 @@ jobs:
           fi
           echo "Codesigning ID: $uuid"
           echo "CODESIGN_ID=$uuid" >> $GITHUB_ENV
+
+        # define provisioning profile variables
+      - name: Install provisioning profiles
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          CIPHER: ${{ secrets.CIPHER }}
+          COSTCO_KEYCHAIN: ${{ env.COSTCO_KEYCHAIN }}
+        run: |
+            set -e
+            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
+            # profile=$(find . -name "*.*provision")
+    
+            for profile in $(find . -name "*.*provision"); do
+              echo "provisioning profile: $profile"
+              78787878787878
+            if [[ "$profile" == *"Notification"* ]]; then
+              ext_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              ext_extension="${profile##*.}"
+              cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$ext_uuid.$ext_extension"
+              echo "Installing notification provisioning profile: $ext_uuid.$ext_extension"
+                      
+            elif [[ "$profile" == *"Widget"* ]]; then
+              widget_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              widget_extension="${profile##*.}"
+              cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$widget_uuid.$widget_extension"
+              echo "Installing widget provisioning profile: $widget_uuid.$widget_extension"
+              
+            else
+              uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              extension="${profile##*.}"
+              cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$uuid.$extension"
+              echo "Installing provisioning profile: $uuid.$extension"
+            fi
+            done
+            
+            echo "PROVISIONING_PROFILE=$uuid" >> $GITHUB_ENV
+            echo "EXT_PROVISIONING_PROFILE=$ext_uuid" >> $GITHUB_ENV
+            echo "EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid" >> $GITHUB_ENV
