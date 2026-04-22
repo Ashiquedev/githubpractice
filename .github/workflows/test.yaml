@@ -25,3 +25,8 @@ jobs:
             fetch-depth: 1
             fetch-tags: false
             clean: true
+        - name: Set SDK
+          run: |
+            set -e
+            echo "Using Xcode version:"
+            xcodebuild -version
