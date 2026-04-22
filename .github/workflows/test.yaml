@@ -30,6 +30,7 @@ jobs:
             fetch-tags: false
             clean: true
         - name: Set SDK
+          
           run: |
             set -e
             echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
@@ -40,10 +41,12 @@ jobs:
             xcodebuild -version
             xcrun simctl list runtimes
         - name: Install Distributions
+          env:
+            SDK: ${{ env.SDK }}
           run: |
             echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
             sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
-            version=$(echo ${_sdk} | grep -oE '[0-9]+\.[0-9]+')
+            version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
             echo "$version"
             if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
               echo "Distribution SDK is already present"
