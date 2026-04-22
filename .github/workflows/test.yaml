@@ -36,4 +36,5 @@ jobs:
             sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app || true
             _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
             echo "SDK=${_sdk}" >> $GITHUB_ENV
-            echo _sdk
+            echo "Detected SDK: $_sdk"
+            xcodebuild -version
