@@ -1,0 +1,696 @@
+name: Costco iOS Performance Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_id:
+        description: 'Test Id'
+        required: false
+        type: string
+      test_execution_id:
+        description: 'Execution Id'
+        required: false
+        type: string
+      trigger_id:
+        description: 'Trigger Id'
+        required: false
+        type: string
+      journeyConfigurationJson:
+        description: 'Journey Configuration JSON'
+        required: true
+        default: '{}'
+        type: string
+      oneTimeAccessToken:
+        description: 'One Time Access Token'
+        required: true
+        default: ''
+        type: string
+
+env:
+  workspace: ${{ github.workspace }}
+  build_number: 1742
+  macos: 'macos-15'
+  xcode_version: '16.4.0'
+  app: '${{ github.workspace }}/Costco QA.app'
+  test_app: '${{ github.workspace }}/CostcoUITests-Runner.app'
+  DEVICE_DESCRIPTOR: 'iPhone_13_Pro_18_real_sjc1_1'
+
+run-name: "Run ${{ github.event.inputs.test_id }} - ${{ github.event.inputs.test_execution_id }} - ${{ github.event.inputs.trigger_id }}"
+
+jobs:
+  extract-job:
+    name: 'Check build source(Saucelab build or Create build)'
+    runs-on: macos-15
+
+    outputs:
+      test_id: ${{ steps.extract_json.outputs.test_id }}
+      exec_id: ${{ steps.extract_json.outputs.exec_id }}
+      test_env: ${{ steps.extract_json.outputs.test_env }}
+      build_id: ${{ steps.extract_json.outputs.build_id }}
+      branch_name: ${{ steps.extract_json.outputs.branch_name }}
+
+    steps:
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      - run: |
+          echo "Run ${{ github.event.inputs.test_id }} - ${{ github.event.inputs.test_execution_id }} - ${{ github.event.inputs.trigger_id }}"
+      - name: Clone Costco-iOS repo 
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.COSTCO_IOS_GITPAT }}@github.com/".insteadOf "https://github.com/"
+          git clone --branch performance_testing/costcoUI_Test_authimplementaion https://github.com/nxt-costco-com/costco-ios.git
+          ls -R Costco-iOS
+
+      - name: List mounted volumes
+        run: ls /Volumes
+
+      - name: List Xcode versions
+        run: sudo ls /Applications
+
+      - name: Parse journeyConfigurationJson
+        id: extract_json
+        run: |
+          echo '${{ github.event.inputs.journeyConfigurationJson }}' > journey.json
+      
+          build_id=$(jq -r '.buildNumber // empty' journey.json)
+          test_setup=$(jq -c '.testSetUp // {}' journey.json)
+          test_profiles=$(jq -c '.testProfiles // {}' journey.json)
+          user_input=$(jq -c '.userInput // {}' journey.json)
+          test_env=$(jq -c '.testEnv // {}' journey.json)
+          exec_id=$(jq -c '.executionId // {}' journey.json)
+
+          # Extract authorization (contains memberAccount inside)
+          authorization=$(jq -c '.authorization // {}' journey.json)
+      
+          test_id=$(jq -r '.id // empty' journey.json)
+          exec_id=$(jq -r '.executionId // empty' journey.json)
+          branch_name=$(jq -r '.branchName // empty' journey.json)
+          test_env=$(jq -r '.testEnv // empty' journey.json)
+          exec_id=$(jq -r '.executionId // empty' journey.json)
+
+      
+          echo "build_id=$build_id" >> $GITHUB_OUTPUT
+          echo "test_setup=$test_setup" >> $GITHUB_OUTPUT
+          echo "test_profiles=$test_profiles" >> $GITHUB_OUTPUT
+          echo "user_input=$user_input" >> $GITHUB_OUTPUT
+          echo "authorization=$authorization" >> $GITHUB_OUTPUT
+          echo "test_id=$test_id" >> $GITHUB_OUTPUT
+          echo "exec_id=$exec_id" >> $GITHUB_OUTPUT
+          echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
+          echo "test_env=$test_env" >> $GITHUB_OUTPUT
+          echo "exec_id=$exec_id" >> $GITHUB_OUTPUT
+
+
+      - name: Update PerfTestConfiguration.json with testSetup and metadata
+        run: |
+          config_path="${{ env.workspace }}/Costco-iOS/Costco/CostcoUITests/PerformanceTest/PerfTestConfiguration.json"
+      
+          test_setup_json='${{ steps.extract_json.outputs.test_setup }}'
+          [[ -z "$test_setup_json" || "$test_setup_json" == "null" ]] && test_setup_json="{}"
+      
+          test_profiles_json='${{ steps.extract_json.outputs.test_profiles }}'
+          [[ -z "$test_profiles_json" || "$test_profiles_json" == "null" ]] && test_profiles_json="{}"
+      
+          user_input_json='${{ steps.extract_json.outputs.user_input }}'
+          [[ -z "$user_input_json" || "$user_input_json" == "null" ]] && user_input_json="{}"
+      
+          authorization_json='${{ steps.extract_json.outputs.authorization }}'
+          [[ -z "$authorization_json" || "$authorization_json" == "null" ]] && authorization_json="{}"
+      
+          updated_json=$(echo "$test_setup_json" | jq \
+            --arg TestID '${{ steps.extract_json.outputs.test_id }}' \
+            --arg BuildId '${{ steps.extract_json.outputs.build_id }}' \
+            --arg Token '${{ github.event.inputs.oneTimeAccessToken }}' \
+            --arg TestEnv '${{ steps.extract_json.outputs.test_env }}' \
+            --arg ExecutionId '${{ steps.extract_json.outputs.exec_id }}' \
+            --argjson TestProfiles "$test_profiles_json" \
+            --argjson UserInput "$user_input_json" \
+            --argjson Authorization "$authorization_json" \
+            '. + {
+              id: $TestID,
+              buildId: $BuildId,
+              oneTimeAccessToken: $Token,
+              testProfiles: $TestProfiles,
+              userInput: $UserInput,
+              testEnv: $TestEnv,
+              executionId: $ExecutionId,
+              authorization: $Authorization
+            }')
+      
+          echo "$updated_json" > "$config_path"
+          cat "$config_path"
+
+      - name: Copy perf_journey_config.yml from repo root
+        run: cp Costco-iOS/perf_journey_config.yml .
+
+      - name: Inject Device ID into YAML
+        run: |
+          device_id=$(echo '${{ steps.extract_json.outputs.test_setup }}' | jq -r '.deviceId // "defaultDeviceID"')
+          echo "$device_id" > device_id.txt
+          sed -i '' "s/DeviceID/$device_id/g" perf_journey_config.yml
+          cat perf_journey_config.yml
+
+      - name: Inject Build ID or fallback $APP
+        run: |
+          build_id="${{ steps.extract_json.outputs.build_id }}"
+          if [[ -z "$build_id" || "$build_id" == "null" ]]; then
+            sed -i '' 's|storage:saucelabStorageID|$APP|g' perf_journey_config.yml
+          else
+            sed -i '' "s|saucelabStorageID|$build_id|g" perf_journey_config.yml
+          fi
+          cat perf_journey_config.yml
+
+      - name: Upload onboarding config artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnboardingConfig
+          path: |
+            perf_journey_config.yml
+            device_id.txt
+            Costco/CostcoUITests/PerformanceTest/PerfTestConfiguration.json
+
+      - name: Create test_ids.json
+        run: |
+          cat <<EOF > test_ids.json
+          {
+            "TestID": "${{ steps.extract_json.outputs.test_id }}",
+            "TestExecutionID": "${{ steps.extract_json.outputs.exec_id }}",
+            "TestEnv": "${{ steps.extract_json.outputs.test_env }}"
+          }
+          EOF
+
+      - name: Upload Test IDs
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestIdentifiers
+          path: test_ids.json
+
+      - name: Set Xcode SDK
+        run: |
+          sudo xcode-select -switch /Applications/Xcode_16.4.0.app
+          sdk=$(xcodebuild -showsdks | grep -i iphoneos | awk -F'sdk' '{print $NF}' | xargs)
+          echo "SDK=$sdk" >> $GITHUB_ENV
+
+      - name: Set archive path
+        run: |
+          archive_path="${{ github.workspace }}/archive_${{ env.build_number }}"
+          echo "ARCHIVE_PATH=$archive_path" >> $GITHUB_ENV
+
+      - name: Build CostcoUITests-Runner.app
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4.0'
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd Costco-iOS/Costco
+          pod install
+
+      - name: Create XCUITest build
+        run: |
+          xcodebuild \
+            -workspace Costco-iOS/Costco/Costco.xcworkspace \
+            -scheme Costco \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath DerivedData \
+            -destination 'generic/platform=iOS' \
+            clean build-for-testing \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEBUG_INFORMATION_FORMAT=dwarf-with-dsym
+
+      - name: Copy CostcoUITests-Runner.app to Artifact Staging
+        run: |
+          RUNNER_APP_PATH="DerivedData/Build/Products/Debug-iphoneos/CostcoUITests-Runner.app"
+          if [ -d "$RUNNER_APP_PATH" ]; then
+            mkdir -p XCUITestRunner
+            cp -R "$RUNNER_APP_PATH" XCUITestRunner/
+          else
+            exit 1
+          fi
+
+      - name: Publish CostcoUITests-Runner.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: CostcoUITestsRunnerApp
+          path: XCUITestRunner
+
+  manual-job:
+    name: Manual Job with SauceLab Build
+    runs-on: macos-15
+    needs: extract-job
+    timeout-minutes: 120
+    if: ${{ needs.extract-job.outputs.build_id != '' }}
+    steps:
+      - name: Download OnboardingConfig
+        uses: actions/download-artifact@v4
+        with:
+          name: OnboardingConfig
+          path: ./config
+
+      - name: Download TestIdentifiers
+        uses: actions/download-artifact@v4
+        with:
+          name: TestIdentifiers
+          path: ./config
+
+      - name: Print TestID and ExecutionID
+        run: |
+          echo "Test ID: ${{ needs.extract-job.outputs.test_id }}"
+          echo "Execution ID: ${{ needs.extract-job.outputs.exec_id }}"
+          echo "Test Env: ${{ needs.extract-job.outputs.test_env }}"
+
+      - name: Parse and Set Variables from JSON
+        run: |
+          echo '${{ github.event.inputs.journeyConfigurationJson }}' > journey.json
+          jq '.' journey.json
+
+      - name: Install jq (if needed)
+        run: |
+          if ! command -v jq &>/dev/null; then
+            brew install jq
+          fi
+
+      - name: Download CostcoUITestsRunnerApp artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CostcoUITestsRunnerApp
+          path: ./artifact
+
+      - name: Move CostcoUITests-Runner.app to expected path
+        run: |
+          find ./artifact -name 'CostcoUITests-Runner.app' -print
+          cp -R ./artifact/CostcoUITests-Runner.app "${{ github.workspace }}/CostcoUITests-Runner.app"
+          ls -l "${{ github.workspace }}/CostcoUITests-Runner.app"
+
+      - name: Set TEST_APP env
+        run: echo "TEST_APP=${{ github.workspace }}/CostcoUITests-Runner.app" >> $GITHUB_ENV
+
+      - name: Install Saucectl
+        run: |
+          sudo sh -c 'curl -L https://saucelabs.github.io/saucectl/install | bash -s -- -b /usr/local/bin'
+          saucectl --version
+
+      - name: Configure Sauce Labs Credentials
+        run: |
+          saucectl configure -u ${{ secrets.SAUCE_USER }} -a ${{ secrets.SAUCE_KEY }}
+
+      - name: Extract Device ID and Check Sauce Labs Device Availability
+        shell: bash
+        run: |
+          set -e
+          echo '${{ github.event.inputs.journeyConfigurationJson }}' > journey.json
+          DEVICE_DESCRIPTOR=$(jq -r '.testSetUp.deviceId' journey.json)
+
+          echo "Checking device availability for: $DEVICE_DESCRIPTOR"
+
+          FILE_PATH="${{ github.workspace }}/testExecutionIDs.json"
+
+          RESPONSE=$(curl -s -u "${{ secrets.SAUCE_USER }}:${{ secrets.SAUCE_KEY }}" \
+            --location 'https://api.us-west-1.saucelabs.com/v1/rdc/devices/status')
+
+          echo "Full API Response:"
+          echo "$RESPONSE" | jq .
+
+          DEVICE_INFO=$(echo "$RESPONSE" | jq -r --arg descriptor "$DEVICE_DESCRIPTOR" '.devices[] | select(.descriptor==$descriptor)')
+
+          if [ -z "$DEVICE_INFO" ]; then
+            echo "❌ Device '$DEVICE_DESCRIPTOR' not found."
+            jq --arg errorMsg "DEVICE_UNAVAILABLE" '. + {errorMessage: $errorMsg}' <<< '{}' > "$FILE_PATH"
+            # 📦 Upload error JSON so later steps don’t break
+            echo "Uploading TestIdentifiers artifact..."
+            echo "FILE_PATH=$FILE_PATH"
+          elif [[ "$(echo "$DEVICE_INFO" | jq -r '.state')" != "AVAILABLE" ]]; then
+            DEVICE_STATE=$(echo "$DEVICE_INFO" | jq -r '.state')
+            echo "❌ Device '$DEVICE_DESCRIPTOR' is NOT available. State: $DEVICE_STATE."
+            jq --arg errMsg "DEVICE_BUSY" '. + {errorMessage: $errMsg}' <<< '{}' > "$FILE_PATH"
+            echo "Uploading TestIdentifiers artifact..."
+          else
+            echo "✅ Device '$DEVICE_DESCRIPTOR' is available."
+            exit 0
+          fi
+        continue-on-error: true
+
+      - name: Run Sauce Labs & Extract Test IDs
+        shell: bash
+        run: |
+          set +e  
+      
+          LOG_FILE="sauce-output.log"
+          saucectl run --ccy 20 --reporters.junit.enabled=true \
+            -c ./config/perf_journey_config.yml | tee "$LOG_FILE"
+      
+          SAUCE_EXIT_CODE=${PIPESTATUS[0]}
+          echo "Sauce exit code: $SAUCE_EXIT_CODE"
+      
+          app_launch_ids_raw=$(mktemp)
+          perf_ids_raw=$(mktemp)
+          hitches_ids_raw=$(mktemp)
+      
+          while IFS= read -r line; do
+            clean_line=$(echo "$line" | sed -E 's/\x1B\[[0-9;]*[mK]//g')
+      
+            if [[ "$clean_line" =~ suite=([A-Za-z0-9_]+)[[:space:]]+url=https://app.saucelabs.com/tests/([a-z0-9]+) ]]; then
+              suite="${BASH_REMATCH[1]}"
+              testId="${BASH_REMATCH[2]}"
+      
+              case "$suite" in
+                PerformanceTest)
+                  echo "$testId" >> "$perf_ids_raw"
+                  ;;
+                AppLaunchTest)
+                  echo "$testId" >> "$app_launch_ids_raw"
+                  ;;
+                HitchesTest)
+                  echo "$testId" >> "$hitches_ids_raw"
+                  ;;
+              esac
+            fi
+          done < "$LOG_FILE"
+      
+          sort -u "$perf_ids_raw" > perf_ids.txt
+          sort -u "$app_launch_ids_raw" > app_launch_ids.txt
+          sort -u "$hitches_ids_raw" > hitches_ids.txt
+      
+          appLaunchJson="[$(paste -sd, app_launch_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+          perfJson="[$(paste -sd, perf_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+          hitchesJson="[$(paste -sd, hitches_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+      
+          echo "{
+            \"TestID\": \"${{ needs.extract-job.outputs.test_id }}\",
+            \"TestExecutionID\": \"${{ needs.extract-job.outputs.exec_id }}\",
+            \"TestEnv\": \"${{ needs.extract-job.outputs.test_env }}\",
+            \"appLaunchTestIds\": $appLaunchJson,
+            \"perfTestIds\": $perfJson,
+            \"hitchesTestIds\": $hitchesJson
+          }" > test_ids.json
+      
+          cat test_ids.json
+      
+          exit 0   # force step to PASS
+
+      - name: Upload Final Test IDs
+        uses: actions/upload-artifact@v4
+        with:
+          name: testIDs
+          path: test_ids.json
+
+  fallback-job:
+    name: "Job with creating new build"
+    runs-on: macos-15
+    needs: extract-job
+    if: ${{ needs.extract-job.outputs.build_id == '' }}
+    steps:
+      - name: Set SDK
+        run: |
+          echo "Setting Xcode version to: ${{ env.xcode_version }} .."
+          sudo xcode-select -switch /Applications/Xcode_${{ env.xcode_version }}.app
+          _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F"sdk" '{print $NF}' | xargs)"
+          echo "SDK=$_sdk" >> $GITHUB_ENV
+          echo "iOS SDK: ${_sdk}"
+
+      - name: Set Xcode archive path
+        run: |
+          archive_path="${{ github.workspace }}/archive_${{ env.build_number }}"
+          echo "ARCHIVE_PATH=$archive_path" >> $GITHUB_ENV
+          echo "ARCHIVE_PATH: $archive_path"
+
+      - name: Extract Test Json from JSON
+        shell: bash
+        run: |
+          echo "Parsing journeyConfigurationJson..."
+
+          if ! command -v jq &> /dev/null; then
+            brew install jq
+          fi
+
+          Test_Set_Up=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -c '.testSetUp // {}')
+          Test_Profiles=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -c '.testProfiles // {}')
+          User_Input=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -c '.userInput // {}')
+
+          Test_ID=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -r '.id // empty')
+          Test_Execution_ID=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -r '.executionId // empty')
+          Build_ID=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -r '.buildNumber // empty')
+          Branch_Name=$(echo '${{ inputs.journeyConfigurationJson }}' | jq -r '.branchName // empty')
+
+          echo "TestSetup=$Test_Set_Up" >> $GITHUB_ENV
+          echo "TestProfiles=$Test_Profiles" >> $GITHUB_ENV
+          echo "UserInput=$User_Input" >> $GITHUB_ENV
+          echo "TestID=$Test_ID" >> $GITHUB_ENV
+          echo "TestExecutionID=$Test_Execution_ID" >> $GITHUB_ENV
+          echo "TestBuildId=$Build_ID" >> $GITHUB_ENV
+          echo "BranchName=$Branch_Name" >> $GITHUB_ENV
+
+          echo "✅ Extracted:"
+          echo "TestID=$Test_ID"
+          echo "ExecutionID=$Test_Execution_ID"
+          echo "BranchName=$Branch_Name"
+
+      - name: Install Sauce Lab Tool
+        run: |
+          sudo sh -c 'curl -L https://saucelabs.github.io/saucectl/install | bash -s -- -b /usr/local/bin'
+          saucectl --version
+
+      - name: Configure Sauce Labs Credentials
+        run: saucectl configure -u ${{ secrets.SAUCE_USER }} -a ${{ secrets.SAUCE_KEY }}
+
+      - name: Clean DerivedData
+        run: rm -rf ~/Library/Developer/Xcode/DerivedData
+
+      - name: Clone Costco-iOS repo (${{ needs.extract-job.outputs.branch_name }})
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.COSTCO_IOS_GITPAT }}@github.com/".insteadOf "https://github.com/"
+          echo "🔍 Cloning branch: ${{ needs.extract-job.outputs.branch_name }}"
+          git clone --branch "${{ needs.extract-job.outputs.branch_name }}" --single-branch https://github.com/nxt-costco-com/costco-ios.git
+          ls -R Costco-iOS
+
+      - name: Version increment
+        working-directory: Costco-iOS/Costco
+        run: |
+          ipa_version=$(agvtool mvers -terse1)
+          agvtool new-version -all ${{ env.build_number }}
+          ipa_version+="_${{ env.build_number }}"
+          echo "IPA_VERSION=$ipa_version" >> $GITHUB_ENV
+          echo "✅ Version updated: $ipa_version"
+
+      - name: Install Pods
+        working-directory: Costco-iOS/Costco
+        run: pod install
+      
+      - name: Pre-fetch Swift Packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace Costco-iOS/Costco/Costco.xcworkspace \
+            -scheme Costco
+            
+      - name: Create XCUITest Build for Sauce Labs
+        run: |
+          xcodebuild \
+            -workspace Costco-iOS/Costco/Costco.xcworkspace \
+            -scheme Costco \
+            -configuration Enterprise-QA \
+            -sdk iphoneos \
+            -derivedDataPath DerivedData \
+            -destination 'generic/platform=iOS' \
+            clean build-for-testing \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_TESTABILITY=YES \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym
+
+      - name: Upload Prod dSYM to Firebase Crashlytics
+        run: |
+          DERIVED="${{ github.workspace }}/DerivedData"
+          DSYM=$(find "$DERIVED/Build/Products" -name "*.app.dSYM" | head -n 1)
+          UPLOAD=$(find "$DERIVED/SourcePackages/checkouts/firebase-ios-sdk" -name upload-symbols | head -n 1)
+          GSP="Costco-iOS/Costco/Costco/Supporting Files/FirebaseConfigs/DEBUG/prod/GoogleService-Info.plist"
+          chmod +x "$UPLOAD"
+          "$UPLOAD" -gsp "$GSP" -p ios "$DSYM"
+
+      - name: Upload QA dSYM to Firebase Crashlytics
+        run: |
+          DERIVED="${{ github.workspace }}/DerivedData"
+          DSYM=$(find "$DERIVED/Build/Products" -name "*.app.dSYM" | head -n 1)
+          UPLOAD=$(find "$DERIVED/SourcePackages/checkouts/firebase-ios-sdk" -name upload-symbols | head -n 1)
+          GSP="Costco-iOS/Costco/Costco/Supporting Files/FirebaseConfigs/DEBUG/qa/GoogleService-Info.plist"
+          chmod +x "$UPLOAD"
+          "$UPLOAD" -gsp "$GSP" -p ios "$DSYM"
+
+      - name: Upload Staging dSYM to Firebase Crashlytics
+        run: |
+          DERIVED="${{ github.workspace }}/DerivedData"
+          DSYM=$(find "$DERIVED/Build/Products" -name "*.app.dSYM" | head -n 1)
+          UPLOAD=$(find "$DERIVED/SourcePackages/checkouts/firebase-ios-sdk" -name upload-symbols | head -n 1)
+          GSP="Costco-iOS/Costco/Costco/Supporting Files/FirebaseConfigs/DEBUG/staging/GoogleService-Info.plist"
+          chmod +x "$UPLOAD"
+          "$UPLOAD" -gsp "$GSP" -p ios "$DSYM"
+
+      - name: Restore Costco Debug.app and CostcoUITests-Runner.app
+        shell: bash
+        run: |
+          echo "🔧 Preparing to restore apps to ${{ github.workspace }}/restored"
+      
+          DEST_DIR="${{ github.workspace }}/restored"
+          mkdir -p "$DEST_DIR"
+
+          echo "📍 Checking for CostcoUITests-Runner.app artifact..."
+          RUNNER_SRC="${{ github.workspace }}/artifact/CostcoUITests-Runner.app"
+
+          if [ -d "$RUNNER_SRC" ]; then
+            cp -R "$RUNNER_SRC" "$DEST_DIR/CostcoUITests-Runner.app"
+            echo "✅ Copied CostcoUITests-Runner.app to $DEST_DIR"
+          else
+            echo "❌ CostcoUITests-Runner.app not found at expected path."
+            echo "🔍 Searching for Runner app..."
+            found_runner=$(find "${{ github.workspace }}" -name "CostcoUITests-Runner.app" | head -n 1)
+            if [ -n "$found_runner" ]; then
+              echo "📌 Found at: $found_runner"
+              cp -R "$found_runner" "$DEST_DIR/CostcoUITests-Runner.app"
+              echo "✅ Restored using detected path."
+            else
+              echo "🚨 ERROR: CostcoUITests-Runner.app not found anywhere."
+            fi
+          fi
+
+          echo "📍 Checking for Costco QA.app in DerivedData..."
+          DEBUG_APP_SRC="${{ github.workspace }}/DerivedData/Build/Products/Enterprise-QA-iphoneos/Costco QA.app"
+
+          if [ -d "$DEBUG_APP_SRC" ]; then
+            cp -R "$DEBUG_APP_SRC" "$DEST_DIR/Costco QA.app"
+            echo "✅ Copied Costco QA.app to $DEST_DIR"
+          else
+            echo "❌ Costco QA.app not found at expected DerivedData path."
+            echo "🔍 Searching for Costco QA.app..."
+            found_debug=$(find "${{ github.workspace }}" -name "Costco QA.app" | head -n 1)
+            if [ -n "$found_debug" ]; then
+              echo "📌 Found at: $found_debug"
+              cp -R "$found_debug" "$DEST_DIR/Costco QA.app"
+              echo "✅ Restored using detected path."
+            else
+              echo "🚨 ERROR: Costco QA.app does not exist."
+            fi
+          fi
+
+          echo "📦 Final .app contents:"
+          ls -la "$DEST_DIR"
+
+      - name: Upload Restored Apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: Restored-iOS-Build
+          path: ${{ github.workspace }}/restored
+
+      - name: Run Sauce Labs & Extract Test IDs
+        shell: bash
+        run: |
+          set +e  
+      
+          LOG_FILE="sauce-output.log"
+          saucectl run --ccy 20 --reporters.junit.enabled=true \
+            -c ./config/perf_journey_config.yml | tee "$LOG_FILE"
+      
+          SAUCE_EXIT_CODE=${PIPESTATUS[0]}
+          echo "Sauce exit code: $SAUCE_EXIT_CODE"
+      
+          app_launch_ids_raw=$(mktemp)
+          perf_ids_raw=$(mktemp)
+          hitches_ids_raw=$(mktemp)
+      
+          while IFS= read -r line; do
+            clean_line=$(echo "$line" | sed -E 's/\x1B\[[0-9;]*[mK]//g')
+      
+            if [[ "$clean_line" =~ suite=([A-Za-z0-9_]+)[[:space:]]+url=https://app.saucelabs.com/tests/([a-z0-9]+) ]]; then
+              suite="${BASH_REMATCH[1]}"
+              testId="${BASH_REMATCH[2]}"
+      
+              case "$suite" in
+                PerformanceTest)
+                  echo "$testId" >> "$perf_ids_raw"
+                  ;;
+                AppLaunchTest)
+                  echo "$testId" >> "$app_launch_ids_raw"
+                  ;;
+                HitchesTest)
+                  echo "$testId" >> "$hitches_ids_raw"
+                  ;;
+              esac
+            fi
+          done < "$LOG_FILE"
+      
+          sort -u "$perf_ids_raw" > perf_ids.txt
+          sort -u "$app_launch_ids_raw" > app_launch_ids.txt
+          sort -u "$hitches_ids_raw" > hitches_ids.txt
+      
+          appLaunchJson="[$(paste -sd, app_launch_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+          perfJson="[$(paste -sd, perf_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+          hitchesJson="[$(paste -sd, hitches_ids.txt | sed 's/,/,\"/g;s/^/\"/;s/$/\"/')]"
+      
+          echo "{
+            \"TestID\": \"${{ needs.extract-job.outputs.test_id }}\",
+            \"TestExecutionID\": \"${{ needs.extract-job.outputs.exec_id }}\",
+            \"TestEnv\": \"${{ needs.extract-job.outputs.test_env }}\",
+            \"appLaunchTestIds\": $appLaunchJson,
+            \"perfTestIds\": $perfJson,
+            \"hitchesTestIds\": $hitchesJson
+          }" > test_ids.json
+      
+          cat test_ids.json
+      
+          exit 0   # force step to PASS
+
+
+      - name: Upload Final testIDs Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: testIDs
+          path: test_ids.json
+
+  upload-results-job:
+    name: "Upload Test Results to Costco API"
+    runs-on: gdx-tst-usw1
+    needs: 
+      - extract-job
+      - manual-job
+      - fallback-job
+    if: always()  # ensures this job runs even if manual/fallback fails, so long as artifacts exist
+    steps:
+      - name: Download Final testIDs Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: testIDs
+          path: ./
+
+      - name: Send PUT request via cURL (multipart)
+        shell: bash
+        run: |
+          echo ">>> Using Test ID: ${{ needs.extract-job.outputs.test_id }}"
+          echo ">>> Using Execution ID: ${{ needs.extract-job.outputs.exec_id }}"
+          echo ">>> Using Test Env: ${{ needs.extract-job.outputs.testEnv }}"
+          echo ">>> Using results from test_ids.json"
+          cat ./test_ids.json
+          
+          if [ -f "./test_ids.json" ]; then
+              echo "File ./test_ids.json exists."
+          else
+              echo "file does not exist"
+          fi
+
+          echo ">>> Sending PUT request..."    
+          
+          http_code=$(curl -kv -X PUT \
+            -w "%{http_code}" \
+            -o response.txt \
+            -s \
+            "https://internal-www-tst.np.gdx.cc-costco.com/perf/core/${{ needs.extract-job.outputs.test_env }}/mobile/api/v1/mobile-tests/${{ needs.extract-job.outputs.test_id }}/executions/${{ needs.extract-job.outputs.exec_id }}/results/IOS_SAUCELAB_TESTS_INFO" \
+            -H "accept: */*" \
+            -H "Content-Type: multipart/form-data" \
+            -H "Authorization: ${{ github.event.inputs.oneTimeAccessToken }}" \
+            -F "file=@./test_ids.json;type=application/json")
+
+          echo ">>> Response code: $http_code"
+          cat response.txt
+          if [ "$http_code" -ne 200 ]; then
+              echo "Error: Expected HTTP 200 OK, but received $http_code"
+              exit 1
+          fi
+

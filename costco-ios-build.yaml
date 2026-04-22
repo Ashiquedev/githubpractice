@@ -1,0 +1,525 @@
+# This task template groups tasks common to the build stage
+parameters:
+  configuration: 'Enterprise-QA'
+
+steps:
+  - checkout: self
+    fetchDepth: 1 
+    fetchTags: false 
+    clean: true
+    displayName: Code Checkout
+
+
+
+  # set the build revision to the current build number
+  - task: Bash@3
+    displayName: Version increment
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)/Costco
+      script: |
+        #!/bin/bash
+        set -e
+
+        ipa_version=$(agvtool mvers -terse1)
+        agvtool new-version -all $(build_number)
+
+        echo "Marketing version (CFBundleShortVersionString): ${ipa_version}"
+        echo "Technical version (CFBundleVersion): $(build_number)"
+
+        ipa_version+="_$(build_number)"
+        echo "##vso[task.setvariable variable=IPA_VERSION]${ipa_version}"
+
+  # generate export options plist
+  - task: Bash@3
+    displayName: Generate export options preference list
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        export PATH=$PATH:/usr/libexec
+        export_options=$(workspace)/exportOptions-${{ parameters.configuration }}.plist
+        bundle_id='com.costco.costco'
+        group_identifier='group.com.costco.costco'
+
+        echo "generating: ${export_options}"
+        case ${{ parameters.configuration }} in
+          Enterprise-QA)
+            PlistBuddy -c "add method string enterprise" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:${bundle_id}.qa string Costco Mobility QA" "$export_options"
+            PlistBuddy -c "add teamID string $(enterprise_team_id)" "$export_options"
+            PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.notification-extension string Costco Mobility QA Notification Extension" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.DMCWidget string Costco Mobility QA DMC Widget Extension" "$export_options"
+            ;;
+          Release)
+            PlistBuddy -c "add method string app-store" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:${bundle_id} string Costco App Store" "$export_options"
+            PlistBuddy -c "add teamID string $(appstore_team_id)" "$export_options"
+            PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:com.costco.costco.notification-extension string Costco App Notification Extension" "$export_options"
+            PlistBuddy -c "add :provisioningProfiles:com.costco.costco.DMCWidget string Costco App DMC Widget Extension" "$export_options"
+            ;;
+        esac
+
+        PlistBuddy -c "add signingStyle string manual" "$export_options"
+        PlistBuddy -c "add signingCertificate string iPhone Distribution" "$export_options"
+        PlistBuddy -c "add compileBitcode bool false" "$export_options"
+        PlistBuddy -c "add uploadSymbols bool true" "$export_options"
+        PlistBuddy -c "add uploadBitcode bool false" "$export_options"
+        PlistBuddy -c "add stripSwiftSymbols bool true" "$export_options"
+
+        echo 'content:'
+        cat "$export_options"
+        echo "##vso[task.setvariable variable=EXPORT_OPTIONS]${export_options}"
+
+  # decrypt signing certs and provisioning profiles
+  - task: Bash@3
+    displayName: Decrypt secure files
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)/Costco/Signing
+      script: |
+        #!/bin/bash
+        set -e
+        for f in $(find . -name "*.enc" | grep ${{ parameters.configuration }}); do
+          echo "decrypting file: ${f%.*}"
+          openssl des3 -d -in $f -out ${f%.*} -k $(cipher)
+          rm -f $f
+        done
+        echo "decrypting noknok ssh key"
+        openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k $(cipher)
+        echo "listing decrypted files .."
+        ls -altr
+
+  # create a temporary keychain and import signing certificates into it
+  - task: Bash@3
+    displayName: Create costco.keychain
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)/Costco/Signing
+      script: |
+        #!/bin/bash
+        set -e
+
+        # create a keychain and set it as the default
+        keychain=$(pwd)/costco.keychain
+        security create-keychain -p $(cipher) $keychain
+        security list-keychains -s $keychain
+
+        # unlock the keychain for 30 minutes
+        security unlock-keychain -p $(cipher) $keychain
+        security set-keychain-settings -lut 1800 $keychain
+        security default-keychain -s $keychain
+
+        for p in *.p12; do
+          echo "Importing: ${p}"
+          security import ./$p -k $keychain -P $(cipher) -A
+        done
+
+        echo "##vso[task.setvariable variable=COSTCO_KEYCHAIN]${keychain}"
+        echo "generated keychain: ${keychain}"
+
+  # install SSH key to fetch noknok sdk
+  - task: Bash@3
+    displayName: Install Noknok SSH deploy key
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)/Costco/Signing
+      script: |
+        #!/bin/bash
+        set -e
+        PASS="$(NOK_PWD)"
+        SSH_DIR="$HOME/.ssh"
+        SSH_CONFIG="$SSH_DIR/config"
+        KEY_PATH="$(pwd)/noknok_deploy_key"
+        mkdir -p "$SSH_DIR"
+        chmod 700 "$SSH_DIR"
+        if ! grep -q "UseKeychain" "$SSH_CONFIG" 2>/dev/null; then
+          echo "Adding macOS Keychain rules to SSH config..."
+          cat > "$SSH_CONFIG" << EOF
+        Host github.com
+          HostName github.com
+          User git
+          IdentityFile $KEY_PATH
+          IdentitiesOnly yes
+          UseKeychain yes
+          AddKeysToAgent yes
+          StrictHostKeyChecking no
+        EOF
+          chmod 600 "$SSH_CONFIG"
+        fi
+        chmod 600 "$SSH_CONFIG"
+        chmod 600 "$KEY_PATH"
+        eval "$(ssh-agent -s)"
+        echo "Unlocking and adding the key to the agent..."
+        echo "$PASS" | ssh-add "$KEY_PATH"
+        echo "Currently loaded keys:"
+        ssh-add -l
+        echo "Setting pipeline variable for git SSH..."
+        echo "##vso[task.setvariable variable=GIT_SSH_COMMAND]ssh -i $KEY_PATH -o IdentitiesOnly=yes"
+        echo "##vso[task.setvariable variable=SSH_AUTH_SOCK]$SSH_AUTH_SOCK"
+        echo "##vso[task.setvariable variable=SSH_AGENT_PID]$SSH_AGENT_PID"
+        ssh -T git@github.com || true
+        git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+
+  # define codesign ID build variables
+  - task: Bash@3
+    displayName: Set codesigning ID's
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        security unlock-keychain -p $(cipher) $(costco_keychain)
+        uuid=$(
+          security find-identity -v -p codesigning |\
+          awk '{$1=""; print $0}' | sort -u | grep -i costco |\
+          awk '{print $1}' | xargs
+          )
+
+        if [[ ${#uuid} -eq 0 ]]; then
+          echo 'Error: Invalid code signing ID'
+          exit 1
+        fi
+
+        echo "Codesigning ID: $uuid"
+        echo "##vso[task.setvariable variable=CODESIGN_ID]${uuid}"
+
+  # define provisioning profile variables
+  - task: Bash@3
+    displayName: Install provisioning profiles
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)/Costco/Signing
+      script: |
+        #!/bin/bash
+        set -e
+        mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
+        # profile=$(find . -name "*.*provision")
+
+        for profile in $(find . -name "*.*provision"); do
+          echo "provisioning profile: $profile"
+          
+        if [[ "$profile" == *"Notification"* ]]; then
+          ext_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+          ext_extension="${profile##*.}"
+          cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$ext_uuid.$ext_extension"
+          echo "Installing notification provisioning profile: $ext_uuid.$ext_extension"
+                  
+        elif [[ "$profile" == *"Widget"* ]]; then
+          widget_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+          widget_extension="${profile##*.}"
+          cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$widget_uuid.$widget_extension"
+          echo "Installing widget provisioning profile: $widget_uuid.$widget_extension"
+          
+        else
+          uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+          extension="${profile##*.}"
+          cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$uuid.$extension"
+          echo "Installing provisioning profile: $uuid.$extension"
+        fi
+        done
+        
+        echo "##vso[task.setvariable variable=PROVISIONING_PROFILE]${uuid}"
+        echo "##vso[task.setvariable variable=EXT_PROVISIONING_PROFILE]${ext_uuid}"
+        echo "##vso[task.setvariable variable=EXT_WIDGET_PROVISIONING_PROFILE]${widget_uuid}"
+        
+  # set the SDK
+  - task: Bash@3
+    displayName: Set SDK
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        echo "Setting xcode version to: $(xcode_version) .."
+        sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+        _sdk="$(xcodebuild -showsdks| grep -i ios |\
+          grep -iv simulator |\
+          grep sdk | awk -F"sdk" '{print $NF}' | xargs)"
+
+        echo "##vso[task.setvariable variable=SDK]${_sdk}"
+        echo "iOS SDK: ${_sdk}"
+
+  # set archive path
+  - task: Bash@3
+    displayName: Set Xcode archive path
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        # set -e
+        archive_path=$(agent.BuildDirectory)/$(build_number)-${{ parameters.configuration }}
+        echo "##vso[task.setvariable variable=ARCHIVE_PATH]${archive_path}"
+        echo "ARCHIVE_PATH: ${archive_path}"
+
+  # install pods ?
+  - script: "cd $(workspace)/Costco && pod install"
+    enabled: false
+    displayName: Pod Install
+
+  # List available runtimes
+  - task: Bash@3
+    displayName: 'list runtimes'
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        xcrun simctl list runtimes
+
+  # install distributions
+  - task: Bash@3
+    displayName: 'Install Distributions'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo 'Setting xcode version: $(xcode_version)'
+        sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+        version=$(echo ${_sdk} | grep -oE '[0-9]+\.[0-9]+')
+        echo "$version"
+
+        if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+          echo "Distribution SDK is already present"
+        else
+          echo "Required SDK not available, Installing the verson ${_sdk}"
+          cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+          xcodebuild -downloadPlatform iOS -buildVersion $(version)
+          echo "Installed the distributions "
+        fi     
+
+  # execute build
+  - task: Bash@3
+    displayName: 'Build ${{ parameters.configuration }}'
+    env:
+      GIT_SSH_COMMAND: $(GIT_SSH_COMMAND)
+      SSH_AUTH_SOCK: $(SSH_AUTH_SOCK)
+      SSH_AGENT_PID: $(SSH_AGENT_PID)
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        echo 'Setting xcode version: $(xcode_version)'
+        sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+        cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+        echo  "Creating xcode archive: $(ARCHIVE_PATH) .."
+        xcodebuild clean archive \
+          -jobs $cpu_count \
+          -workspace $(workspace)/Costco/Costco.xcworkspace \
+          -scheme $(scheme) \
+          -configuration ${{ parameters.configuration }} \
+          -archivePath $(ARCHIVE_PATH) \
+          CODE_SIGN_STYLE=Manual \
+          CODE_SIGN_IDENTITY=$(CODESIGN_ID) \
+          # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
+          APP_PROFILE=$(PROVISIONING_PROFILE) \
+          EXTENSION_PROFILE=$(EXT_PROVISIONING_PROFILE) \
+          EXTENSION_PROFILE=$(EXT_WIDGET_PROVISIONING_PROFILE) \
+          | xcpretty
+
+  # collect debug symbols
+  - task: Bash@3
+    displayName: Collect App's dSYM's
+    # condition: or( eq('${{ parameters.configuration }}', 'Debug'), eq('${{ parameters.configuration }}', 'Enterprise-QA') )
+
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+        echo 'archiving debug symbols'
+        debug_symbols=$(find -L $(ARCHIVE_PATH).xcarchive -name "*app.dSYM" -type d | grep -i "\.app")
+        appex_notification_debug_symbols=$(find -L $(ARCHIVE_PATH).xcarchive -name "*Notification*appex.dSYM" -type d | grep -i "\.app")
+        appex_widget_debug_symbols=$(find -L $(ARCHIVE_PATH).xcarchive -name "*Widget*appex.dSYM" -type d | grep -i "\.app")
+        dirname=$(Build.SourcesDirectory)/dSYM
+        if [ ! -d "$dirname" ]
+        then
+            mkdir $dirname
+            cp -r "${debug_symbols}" "${dirname}"
+            cp -r "${appex_notification_debug_symbols}" "${dirname}"
+            cp -r "${appex_widget_debug_symbols}" "${dirname}"
+        else
+            echo "File exists"
+        fi
+        echo "${debug_symbols}"
+        echo "${appex_notification_debug_symbols}"
+        echo "${appex_widget_debug_symbols}"
+       
+        if [[ -n "${debug_symbols}" ]]; then
+          zip -r $(ARCHIVE_PATH)-dSYM.zip "${dirname}"
+        else
+          echo 'WARNING: missing debug symbols'
+        fi
+
+  # only include arm64 binaries for AppStore distribution
+  - task: Bash@3
+    displayName: Remove unsupported architectures
+    # condition: eq('${{ parameters.configuration }}', 'Release')
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(agent.BuildDirectory)
+      script: |
+        #!/bin/bash
+        # set -e
+
+        architectures=(arm64)
+        echo 'searching for frameworks'
+        find -L $(ARCHIVE_PATH).xcarchive -name "*.framework" -type d | while read -r framework; do
+          echo "Framework: $framework"
+          binaryname=$(defaults read "$framework/Info.plist" CFBundleExecutable 2>/dev/null)
+
+          if [[ -n $binaryname ]]; then
+            # check if the binary is a FAT file
+            binarypath="${framework}/${binaryname}"
+            lipo -info "$binarypath" | grep -iv 'non-fat' 2>/dev/null
+
+            if [[ $? -eq 0 ]]; then
+              extracted=()
+              for arch in "${architectures[@]}"; do
+                echo "extracting ${arch} from ${binaryname} .."
+                lipo -extract "${arch}" "${binarypath}" -o "${binarypath}-${arch}"
+                extracted+=("${binarypath}-${arch}")
+              done
+
+              if [ ${#extracted[@]} -gt 0 ]; then
+                echo "merging extracted architectures: ${architectures[@]} .."
+                lipo -o "${binarypath}-merged" -create "${extracted[@]}"
+                rm -rf "${extracted[@]}"
+
+                echo 'replacing original binary with thinned version ..'
+                mv "${binarypath}-merged" "${binarypath}"
+              fi
+            fi
+          fi
+        done
+
+  # create the IPA as a separate step -- the archive and
+  # export actions are tightly-coupled in the Xcode pipeline task
+  - task: Bash@3
+    displayName: Export xcode archive (IPA)
+    inputs:
+      targetType: 'inline'
+      workingDirectory: $(workspace)
+      script: |
+        #!/bin/bash
+        set -e
+
+        cores=$(sysctl hw.ncpu | awk '{print $NF}')
+        echo "Creating ipa from $(ARCHIVE_PATH) .."
+        xcodebuild \
+          -exportArchive \
+          -jobs ${cores} \
+          -archivePath $(ARCHIVE_PATH).xcarchive \
+          -exportPath $(ARCHIVE_PATH) \
+          -exportOptionsPlist $(EXPORT_OPTIONS) \
+          # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
+          APP_PROFILE=$(PROVISIONING_PROFILE) \
+          EXTENSION_PROFILE=$(EXT_PROVISIONING_PROFILE) \
+          EXTENSION_PROFILE=$(EXT_WIDGET_PROVISIONING_PROFILE) \
+          EMBEDDED_CONTENT_CONTAINS_SWIFT=Yes
+
+  # compile release notes
+  - task: Bash@3
+    displayName: Compile PR Release Notes
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        # write out release notes to a file
+        echo 'collecting build summary for PR'
+        release_notes=$(Build.ArtifactStagingDirectory)/$(build_number)-${{ parameters.configuration }}-release-notes.md
+
+        echo "_____________" >> $release_notes
+        echo "Build Summary: " >> $release_notes
+        if [[ "$(Build.Reason)" == *PullRequest* ]]; then
+          echo "- PullRequest: $(system.pullRequest.pullRequestNumber)" >> $release_notes
+        fi
+        echo "- Build Configuration: ${{ parameters.configuration }}" >> $release_notes
+        echo "- Build: $(build_number)" >> $release_notes
+        echo "- Build url: $(Build.BuildUri)" >> $release_notes
+        echo "- GIT commit: $(Build.SourceVersion)" >> $release_notes
+        echo "- GIT url: $(Build.Repository.Uri)" >> $release_notes
+        echo "- GIT branch: $(Build.SourceBranch)" >> $release_notes
+        echo "_____________" >> $release_notes
+
+        echo "Release Notes: " >> $release_notes
+        echo "- $(PR_RELEASE_NOTES)" >> $release_notes
+        if [[ -n "$(PR_MILESTONE)" ]]; then
+          # grab all "closed" issues
+          curl -s --fail -X GET \
+            -H "Authorization: token $(GIT_TOKEN)" \
+            $(GIT_API_URL)/issues?state=closed \
+            | python -m json.tool > issues.json
+
+          # query all related pull-requests
+          echo Gathering Pull-requests with milestone: $(PR_MILESTONE)
+          prs=$(cat issues.json \
+            | jq -r --arg m "$(PR_MILESTONE)" \
+            '.[] | select(.milestone.title == $m and (.labels[0].name == "Release Notes")) | .pull_request.url')
+
+          # loop through pull-requests
+          echo Found $(echo "$prs" | wc -l) related pull-requests
+          for url in $prs; do
+            echo "checking PR: $(basename $url)"
+            pr=$(curl -s --fail -X GET -H "Authorization: token $(GIT_TOKEN)" "$url")
+
+            # only include release notes from "merged" PR's ?
+            # if [[ "$(echo $pr | jq -r '.merged')" == *true* ]]; then
+
+            # @TBD -- changing the comment to force a CI build
+            if [ 1 ]; then
+              echo "- $(echo $pr | jq -r '.body')" | tee -a $release_notes
+            fi
+          done
+        fi
+
+  # collect all build artifacts
+  - task: Bash@3
+    displayName: Stage artifacts
+    inputs:
+      targetType: 'inline'
+      script: |
+        #!/bin/bash
+        set -e
+
+        # copy artifacts to staging path
+        echo 'Staging IPA ..'
+        find "$(agent.BuildDirectory)" -type f -name "*.ipa" \
+          -exec cp -a {} $(Build.ArtifactStagingDirectory)/$(build_number)-${{ parameters.configuration }}.ipa \;
+
+        #if [[ "${{ parameters.configuration}}" != *Release* ]]; then
+        echo 'Staging debug symbols ..'
+        find "$(agent.BuildDirectory)" -type f -name "*dSYM.zip" \
+          -exec cp -a {} $(Build.ArtifactStagingDirectory)/$(build_number)-${{ parameters.configuration }}-dSYM.zip \;
+        #fi
+
+        echo 'Staging release notes ..'
+        cat $(Build.ArtifactStagingDirectory)/*${{ parameters.configuration }}*.md
+
+        echo 'Staging xcarchive ..'
+        zip -r $(Build.ArtifactStagingDirectory)/$(basename $(ARCHIVE_PATH)).xcarchive.zip "$(ARCHIVE_PATH).xcarchive"
+        # cp -a "$(ARCHIVE_PATH).xcarchive" $(Build.ArtifactStagingDirectory)/
+
+        # sanity check - list out all the staged artifacts
+        ls -alt $(Build.ArtifactStagingDirectory) | grep ${{ parameters.configuration }}
+
+  # publish artifacts
+  - task: PublishBuildArtifacts@1
+    displayName: Publish artifacts
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'build'
+      publishLocation: 'Container'

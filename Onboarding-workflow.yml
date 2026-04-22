@@ -1,0 +1,573 @@
+name: Onboarding Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Build Id'
+        required: false
+        type: string
+      screen_id:
+        description: 'Screen Id'
+        required: false
+        type: string
+      trigger_id:
+        description: 'Trigger Id'
+        required: false
+        type: string
+      configuration:
+        description: 'Build Configuration'
+        required: false
+        default: 'Enterprise-QA'
+        type: string
+      oneTimeAccessToken:
+        description: 'One Time Access Token'
+        required: false
+        default: ''
+        type: string
+      onboardingConfigurationJson:
+        description: 'Onboarding Configuration JSON (string)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  # default env (can be overridden in jobs)
+  MACOS_IMAGE: macos-15
+  SCHEME: 'Costco'
+  XCODE_VERSION: '16.4.0'
+  OS_VERSION: '17.2'
+  app: '${{ github.workspace }}/DerivedData/Build/Products/Debug-iphoneos/Costco QA.app'
+  test_app: '${{ github.workspace }}/DerivedData/Build/Products/Debug-iphoneos/CostcoUITests-Runner.app'
+  SAUCECTL_REPORT_PATH: ${{ github.workspace }}/saucectl-report.xml
+  OUTPUT_FILE_PATH: test_ids.json
+
+run-name: "Run ${{ github.event.inputs.build_id }} - ${{ github.event.inputs.screen_id }} - ${{ github.event.inputs.trigger_id }}"
+
+jobs:
+  extract:
+    name: Extract onboardingConfigurationJson
+    runs-on: macos-15
+    outputs:
+      test_build_id: ${{ steps.extract.outputs.test_build_id }}
+      branch_name: ${{ steps.extract.outputs.branch_name }}
+    steps:
+      - run: |
+          echo "Run ${{ github.event.inputs.build_id }} - ${{ github.event.inputs.screen_id }} - ${{ github.event.inputs.trigger_id }}"
+      - name: Ensure jq is installed
+        run: |
+          if ! command -v jq &> /dev/null; then
+            brew install jq
+          fi
+
+      - name: Parse onboardingConfigurationJson
+        id: extract
+        shell: bash
+        run: |
+          echo "Parsing onboardingConfigurationJson..."
+          # Use the workflow input (from workflow_dispatch). Also works if empty.
+          JSON='${{ github.event.inputs.onboardingConfigurationJson }}'
+          # Safe fallback
+          if [ -z "$JSON" ] || [ "$JSON" = " " ]; then
+            echo "No onboardingConfigurationJson provided."
+            echo "test_build_id=" >> $GITHUB_OUTPUT
+            echo "branch_name=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          BUILD_ID=$(echo "$JSON" | jq -r '.buildNumber // empty')
+          BRANCH_NAME=$(echo "$JSON" | jq -r '.branchName // empty')
+          echo "Parsed Build ID: $BUILD_ID"
+          echo "Parsed Branch Name: $BRANCH_NAME"
+          echo "test_build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+  fallback:
+    name: Fallback (create new build)  # runs when no TestBuildId present
+    needs: extract
+    if: ${{ needs.extract.outputs.test_build_id == '' }}
+    runs-on: macOS-15
+    timeout-minutes: 180
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+      WORKSPACE: ${{ github.workspace }}
+      CONFIGURATION: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
+      ONE_TIME_TOKEN: ${{ github.event.inputs.oneTimeAccessToken }}
+      ONBOARDING_JSON: ${{ github.event.inputs.onboardingConfigurationJson }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        
+      - name: Clone Costco-iOS repo
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.COSTCO_IOS_GITPAT }}@github.com/".insteadOf "https://github.com/"
+          git clone --branch performance_testing/costcoUI_Test_authimplementaion --single-branch https://github.com/nxt-costco-com/costco-ios.git
+          echo "📁 Listing contents of cloned directory:"
+          ls -R Costco-iOS
+
+      - name: Stash onboarding config file (if exists)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/build_artifact_stash"
+          if [ -f "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" ]; then
+            cp "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" "$GITHUB_WORKSPACE/build_artifact_stash/"
+            echo "Stashed perf_onboarding_element_config.yml"
+          else
+            echo "No perf_onboarding_element_config.yml to stash"
+          fi
+
+      - name: Debug show current branch and commits
+        run: |
+          echo "Repository folders:"
+          ls -la "$GITHUB_WORKSPACE" || true
+          git rev-parse --abbrev-ref HEAD || true
+          git log -5 --oneline || true
+
+      - name: Ensure jq is installed
+        run: |
+          if ! command -v jq &> /dev/null; then
+            brew install jq
+          fi
+
+      - name: Add oneTimeAccessToken & testProfiles to Onboarding JSON
+        run: |
+          # Ensure output directory exists
+          mkdir -p "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest"
+          
+          # Create testProfiles JSON
+          cat > /tmp/test_profiles.json <<'EOF'
+          {
+            "Firebase Environment, Also configurable in iOS Settings": "STAGING",
+            "WCS Environment & Region, Remotely extendable on Firebase QA": "APP DEFAULT",
+            "Contentstack Environment, Also configurable in iOS Settings": "costcoProd",
+            "BFF Environment": "prod",
+            "Warehouse List Environment": "prod",
+            "Adbutler Environment": "prod"
+          }
+          EOF
+          
+          # Merge onboarding JSON + oneTimeAccessToken + testProfiles
+          echo "${ONBOARDING_JSON}" \
+            | jq --slurpfile tp /tmp/test_profiles.json \
+                 --arg token "${ONE_TIME_TOKEN}" \
+                 '.[0] + { "oneTimeAccessToken": $token, "testProfiles": $tp[0] }' \
+            > "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest/OnboardingConfiguration.json"
+          
+          # Export TestBuildId env for later steps
+          echo "TestBuildId=${TEST_BUILD_ID}" >> $GITHUB_ENV
+          
+          # Print final JSON for verification
+          echo "✅ Wrote OnboardingConfiguration.json with oneTimeAccessToken:"
+          jq '.' "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest/OnboardingConfiguration.json"
+
+      - name: Extract Branch Name from Onboarding JSON and set env var
+        run: |
+          JSON='${{ github.event.inputs.onboardingConfigurationJson }}'
+          if [ -z "$JSON" ]; then
+            echo "BranchName="
+            exit 0
+          fi
+          Branch_Name=$(echo "$JSON" | jq -r '.branchName // empty')
+          echo "BranchName parsed: $Branch_Name"
+          # set as env for remaining steps in this job:
+          echo "BRANCH_NAME=$Branch_Name" >> $GITHUB_ENV
+
+      - name: Inject literal $APP string in config (replace storage:saucelabStorageID)
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" ]; then
+            sed -i '' 's|storage:saucelabStorageID|$APP|g' "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" || sed -i 's|storage:saucelabStorageID|$APP|g' "$GITHUB_WORKSPACE/perf_onboarding_element_config.yml"
+            echo "Updated perf_onboarding_element_config.yml (in place)."
+            cat "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" || true
+          else
+            echo "No perf_onboarding_element_config.yml found to modify."
+          fi
+
+      - name: Get and set initial version (agvtool)
+        working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+        shell: bash
+        run: |
+          set -e
+          ipa_version=$(agvtool mvers -terse1 || echo "")
+          agvtool new-version -all ${BUILD_NUMBER} || true
+          echo "Marketing version: ${ipa_version}"
+          echo "Technical version: ${BUILD_NUMBER}"
+          full_version="${ipa_version}${BUILD_NUMBER}"
+          echo "IPA_VERSION=${full_version}" >> $GITHUB_ENV
+          echo "MARKETING_VERSION=${ipa_version}" >> $GITHUB_ENV
+          echo "TECHNICAL_VERSION=${BUILD_NUMBER}" >> $GITHUB_ENV
+
+      - name: Clean DerivedData
+        shell: bash
+        run: |
+          echo "Removing DerivedData..."
+          rm -rf ~/Library/Developer/Xcode/DerivedData || true
+
+      - name: Set SDK (xcode-select & detect SDK)
+        shell: bash
+        run: |
+          set -e
+          echo "Setting xcode version to: ${XCODE_VERSION} .."
+          if [ -d "/Applications/Xcode_${XCODE_VERSION}.app" ]; then
+            sudo xcode-select -switch /Applications/Xcode_${XCODE_VERSION}.app || true
+          else
+            echo "Xcode_${XCODE_VERSION}.app not present on runner; continuing with default Xcode"
+          fi
+          _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
+          echo "SDK=${_sdk}" >> $GITHUB_ENV
+          echo "iOS SDK: ${_sdk}"
+
+      - name: Set Xcode archive path
+        shell: bash
+        run: |
+          archive_path="${RUNNER_WORKSPACE}/${BUILD_NUMBER}-${CONFIGURATION}"
+          echo "ARCHIVE_PATH=${archive_path}" >> $GITHUB_ENV
+          echo "ARCHIVE_PATH: ${archive_path}"
+
+      - name: Pod Install (branch A)
+        working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+        run: pod install || true
+
+      - name: Install Sauce Labs Tool
+        shell: bash
+        run: |
+          echo "Installing saucectl..."
+          sudo sh -c 'curl -L https://saucelabs.github.io/saucectl/install | bash -s -- -b /usr/local/bin' || true
+          which saucectl || true
+
+      - name: Configure Sauce Labs Credentials (for saucectl)
+        shell: bash
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USER }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_KEY }}
+        run: |
+          if command -v saucectl > /dev/null 2>&1; then
+            saucectl configure -u "${SAUCE_USERNAME}" -a "${SAUCE_ACCESS_KEY}" || true
+            echo "Sauce Labs credentials configured for saucectl"
+          else
+            echo "saucectl is not installed - skipping configure"
+          fi
+
+      - name: Create XCUITest Build (branch A)
+        shell: bash
+        run: |
+          set -e
+          xcodebuild clean build-for-testing \
+            -workspace "Costco-iOS/Costco/Costco.xcworkspace" \
+            -scheme "${SCHEME}" \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath "${GITHUB_WORKSPACE}/DerivedData" \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO || true
+
+      - name: Save first branch builds (copy .app artifacts if present)
+        shell: bash
+        run: |
+          SRC_RUNNER_APP="${GITHUB_WORKSPACE}/DerivedData/Build/Products/Debug-iphoneos/CostcoUITests-Runner.app"
+          SRC_DEBUG_APP="${GITHUB_WORKSPACE}/DerivedData/Build/Products/Debug-iphoneos/Costco Debug.app"
+          DEST="${GITHUB_WORKSPACE}/artifact_staging"
+          mkdir -p "$DEST"
+          if [ -d "$SRC_DEBUG_APP" ]; then
+            cp -R "$SRC_DEBUG_APP" "$DEST/Costco-Debug-BranchA.app"
+            echo "Copied Debug app to staging"
+          else
+            echo "Debug app not found at $SRC_DEBUG_APP"
+          fi
+          if [ -d "$SRC_RUNNER_APP" ]; then
+            cp -R "$SRC_RUNNER_APP" "$DEST/CostcoUITests-Runner-BranchA.app"
+            echo "Copied Runner app to staging"
+          else
+            echo "Runner app not found at $SRC_RUNNER_APP"
+          fi
+
+      - name: Checkout branch from onboarding JSON (if BRANCH_NAME set)
+        shell: bash
+        run: |
+          if [ -n "${BRANCH_NAME}" ]; then
+            echo "Checking out branch: ${BRANCH_NAME}"
+            git fetch origin "${BRANCH_NAME}" --depth=1 || true
+            git checkout -f "${BRANCH_NAME}" || true
+          else
+            echo "No branch specified in onboarding JSON - staying on default branch"
+          fi
+
+      - name: Pod Install (after branch switch) (disabled by default)
+        if: false
+        working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+        run: pod install || true
+
+      - name: Set Orientation to Portrait and Print Changes (Info.plist)
+        shell: bash
+        run: |
+          PLIST_PATH="${GITHUB_WORKSPACE}/Costco/Costco/Supporting Files/Costco-Info.plist"
+          if [ -f "$PLIST_PATH" ]; then
+            echo "Before modification:"
+            plutil -p "$PLIST_PATH" || true
+            plutil -replace UISupportedInterfaceOrientations -json '["UIInterfaceOrientationPortrait"]' "$PLIST_PATH" || true
+            echo "After modification:"
+            plutil -p "$PLIST_PATH" || true
+          else
+            echo "PLIST not found at $PLIST_PATH"
+          fi
+
+      - name: Set Orientation to Portrait and Print Changes (InfoQA.plist)
+        shell: bash
+        run: |
+          PLIST_PATH="${GITHUB_WORKSPACE}/Costco/Costco/Supporting Files/Costco-InfoQA.plist"
+          if [ -f "$PLIST_PATH" ]; then
+            echo "Before modification:"
+            plutil -p "$PLIST_PATH" || true
+            plutil -replace UISupportedInterfaceOrientations -json '["UIInterfaceOrientationPortrait"]' "$PLIST_PATH" || true
+            echo "After modification:"
+            plutil -p "$PLIST_PATH" || true
+          else
+            echo "PLIST not found at $PLIST_PATH"
+          fi
+
+      - name: Re-apply version on secondary branch (agvtool)
+        working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+        shell: bash
+        run: |
+          set -e
+          if [ -n "${MARKETING_VERSION}" ]; then
+            agvtool new-marketing-version "${MARKETING_VERSION}" || true
+          fi
+          agvtool new-version -all "${TECHNICAL_VERSION:-${BUILD_NUMBER}}" || true
+          echo "Re-applied versions."
+
+      - name: Create XCUITest Build (branch B)
+        shell: bash
+        run: |
+          set -e
+          xcodebuild clean build-for-testing \
+            -workspace "Costco-iOS/Costco/Costco.xcworkspace" \
+            -scheme "${SCHEME}" \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath "${GITHUB_WORKSPACE}/DerivedData" \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO || true
+
+      - name: Restore Runner App from Branch A and Debug App from Branch B
+        shell: bash
+        run: |
+          SRC_RUNNER="${GITHUB_WORKSPACE}/artifact_staging/CostcoUITests-Runner-BranchA.app"
+          SRC_DEBUG="${GITHUB_WORKSPACE}/DerivedData/Build/Products/Debug-iphoneos/Costco Debug.app"
+          if [ -d "$SRC_RUNNER" ]; then
+            cp -R "$SRC_RUNNER" "/Users/runner/work/1/a/CostcoUITests-Runner.app" || true
+            echo "Restored Runner app"
+          else
+            echo "Runner app not found in artifact_staging"
+          fi
+          if [ -d "$SRC_DEBUG" ]; then
+            cp -R "$SRC_DEBUG" "/Users/runner/work/1/a/Costco Debug.app" || true
+            echo "Restored Debug app"
+          else
+            echo "Debug app not found in DerivedData"
+          fi
+
+      - name: Restore onboarding config file (from stash)
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/build_artifact_stash/perf_onboarding_element_config.yml" ]; then
+            cp "$GITHUB_WORKSPACE/build_artifact_stash/perf_onboarding_element_config.yml" "$GITHUB_WORKSPACE/Costco-iOS/" || true
+            echo "Restored perf_onboarding_element_config.yml"
+          else
+            echo "No stashed config to restore"
+          fi
+
+      - name: Run Sauce Labs Tests
+        shell: bash
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USER }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_KEY }}
+          APP: ${{ env.app }}
+          TEST_APP: ${{ env.test_app }}
+        run: |
+          if command -v saucectl > /dev/null 2>&1; then
+            saucectl run --ccy 20 -c ./Costco-iOS/perf_onboarding_element_config.yml || true
+          else
+            echo "saucectl not available; skipping saucectl run"
+          fi
+
+  manual:
+    name: Job with Saucelab build (when TestBuildId provided)
+    needs: extract
+    if: ${{ needs.extract.outputs.test_build_id != '' }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+      WORKSPACE: ${{ github.workspace }}
+      CONFIGURATION: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
+      TEST_BUILD_ID: ${{ needs.extract.outputs.test_build_id }}
+      ONE_TIME_TOKEN: ${{ github.event.inputs.oneTimeAccessToken }}
+      ONBOARDING_JSON: ${{ github.event.inputs.onboardingConfigurationJson }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        
+      - name: Clone Costco-iOS repo
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.COSTCO_IOS_GITPAT }}@github.com/".insteadOf "https://github.com/"
+          git clone --branch performance_testing/costcoUI_Test_authimplementaion --single-branch https://github.com/nxt-costco-com/costco-ios.git
+          echo "📁 Listing contents of cloned directory:"
+          ls -R Costco-iOS
+
+      - name: Stash onboarding config file (if exists)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/build_artifact_stash"
+          if [ -f "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" ]; then
+            cp "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" "$GITHUB_WORKSPACE/build_artifact_stash/"
+            echo "Stashed perf_onboarding_element_config.yml"
+          fi
+
+      - name: Ensure jq is installed
+        run: |
+          if ! command -v jq &> /dev/null; then
+            brew install jq
+          fi
+     
+      - name: Debug workspace tree
+        run: ls -R "$GITHUB_WORKSPACE"
+
+      - name: Add oneTimeAccessToken & testProfiles to Onboarding JSON + set TestBuildId
+        run: |
+          # Ensure output directory exists
+          mkdir -p "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest"
+          
+          # Create testProfiles JSON
+          cat > /tmp/test_profiles.json <<'EOF'
+          {
+            "Firebase Environment, Also configurable in iOS Settings": "STAGING",
+            "WCS Environment & Region, Remotely extendable on Firebase QA": "APP DEFAULT",
+            "Contentstack Environment, Also configurable in iOS Settings": "costcoProd",
+            "BFF Environment": "prod",
+            "Warehouse List Environment": "prod",
+            "Adbutler Environment": "prod"
+          }
+          EOF
+          
+          # Merge onboarding JSON + oneTimeAccessToken + testProfiles
+          echo "${ONBOARDING_JSON}" \
+            | jq --slurpfile tp /tmp/test_profiles.json \
+                 --arg token "${ONE_TIME_TOKEN}" \
+                 '. + { "oneTimeAccessToken": $token, "testProfiles": $tp[0] }' \
+            > "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest/OnboardingConfiguration.json"
+          
+          # Export TestBuildId env for later steps
+          echo "TestBuildId=${TEST_BUILD_ID}" >> $GITHUB_ENV
+          
+          # Print final JSON for verification
+          echo "✅ Wrote OnboardingConfiguration.json with oneTimeAccessToken:"
+          jq '.' "$GITHUB_WORKSPACE/Costco-iOS/Costco/CostcoUITests/PerformanceTest/OnboardingConfiguration.json"
+
+
+      - name: Inject dynamic saucelabDeviceID (replace placeholder with TestBuildId)
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" ]; then
+            sed -i '' "s/saucelabStorageID/${TEST_BUILD_ID}/g" "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" || sed -i "s/saucelabStorageID/${TEST_BUILD_ID}/g" "$GITHUB_WORKSPACE/perf_onboarding_element_config.yml"
+            echo "Updated perf_onboarding_element_config.yml with TestBuildId"
+            cat "$GITHUB_WORKSPACE/Costco-iOS/perf_onboarding_element_config.yml" || true
+          else
+            echo "No perf_onboarding_element_config.yml found to modify."
+          fi
+
+      - name: Extract Branch Name from Onboarding JSON and set env var
+        run: |
+          JSON='${{ github.event.inputs.onboardingConfigurationJson }}'
+          if [ -n "$JSON" ]; then
+            Branch_Name=$(echo "$JSON" | jq -r '.branchName // empty')
+            echo "BRANCH_NAME=$Branch_Name" >> $GITHUB_ENV
+            echo "BranchName parsed: $Branch_Name"
+          else
+            echo "No onboarding JSON; BranchName not set."
+          fi
+
+      # - name: Get and set initial version (agvtool)
+      #   working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+      #   run: |
+      #     set -e
+      #     ipa_version=$(agvtool mvers -terse1 || echo "")
+      #     agvtool new-version -all ${BUILD_NUMBER} || true
+      #     echo "IPA_VERSION=${ipa_version}${BUILD_NUMBER}" >> $GITHUB_ENV
+      #     echo "MARKETING_VERSION=${ipa_version}" >> $GITHUB_ENV
+      #     echo "TECHNICAL_VERSION=${BUILD_NUMBER}" >> $GITHUB_ENV
+
+      - name: Set SDK
+        run: |
+          set -e
+          echo "Setting xcode version to: ${XCODE_VERSION} .."
+          if [ -d "/Applications/Xcode_${XCODE_VERSION}.app" ]; then
+            sudo xcode-select -switch /Applications/Xcode_${XCODE_VERSION}.app || true
+          fi
+          _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
+          echo "SDK=${_sdk}" >> $GITHUB_ENV
+
+      - name: Set Xcode archive path
+        run: |
+          archive_path="${RUNNER_WORKSPACE}/${BUILD_NUMBER}-${CONFIGURATION}"
+          echo "ARCHIVE_PATH=${archive_path}" >> $GITHUB_ENV
+
+      - name: Pod Install
+        working-directory: ${{ github.workspace }}/Costco-iOS/Costco
+        run: pod install || true
+
+      - name: Install Sauce Labs Tool
+        run: |
+          sudo sh -c 'curl -L https://saucelabs.github.io/saucectl/install | bash -s -- -b /usr/local/bin' || true
+
+      - name: Configure Sauce Labs Credentials
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USER }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_KEY }}
+        run: |
+          if command -v saucectl > /dev/null 2>&1; then
+            saucectl configure -u "${SAUCE_USERNAME}" -a "${SAUCE_ACCESS_KEY}" || true
+            echo "Sauce credentials configured"
+          else
+            echo "saucectl not installed"
+          fi
+
+      - name: Create XCUITest Build
+        run: |
+          set -e
+          xcodebuild clean build-for-testing \
+            -workspace "Costco-iOS/Costco/Costco.xcworkspace" \
+            -scheme "${SCHEME}" \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath "${GITHUB_WORKSPACE}/DerivedData" \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO || true
+
+      - name: Archive Derived app folder -> Test.zip (optional)
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/artifact_staging"
+          ZIP_PATH="${GITHUB_WORKSPACE}/artifact_staging/Test.zip"
+          cd "${GITHUB_WORKSPACE}/DerivedData/Build/Products/Debug-iphoneos/" || true
+          if [ -d "${GITHUB_WORKSPACE}/DerivedData/Build/Products/Debug-iphoneos/" ]; then
+            zip -r "${ZIP_PATH}" . || true
+            echo "Zipped Debug-iphoneos to ${ZIP_PATH}"
+          else
+            echo "No build products found to zip"
+          fi
+
+      - name: Extract Test.zip to staging (if created)
+        run: |
+          if [ -f "${GITHUB_WORKSPACE}/artifact_staging/Test.zip" ]; then
+            unzip -o "${GITHUB_WORKSPACE}/artifact_staging/Test.zip" -d "${GITHUB_WORKSPACE}/artifact_staging" || true
+            echo "Extracted Test.zip"
+          else
+            echo "No Test.zip present"
+          fi
+
+      - name: Run Sauce Labs Tests
+        env:
+          SAUCE_USERNAME: ${{ secrets.SAUCE_USER }}
+          SAUCE_ACCESS_KEY: ${{ secrets.SAUCE_KEY }}
+          APP: ${{ env.app }}
+          TEST_APP: ${{ env.test_app }}
+        run: |
+          if command -v saucectl > /dev/null 2>&1; then
+            saucectl run --ccy 20 -c ./Costco-iOS/perf_onboarding_element_config.yml || true
+          else
+            echo "saucectl not installed; skipping"
+          fi

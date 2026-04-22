@@ -1,0 +1,963 @@
+# Costco iOS
+name: $(Build.Reason)-$(SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+# these parameters only apply to manually-triggered builds
+parameters:
+- name: configuration
+  displayName: Build Configuration
+  type: string
+  default: 'Enterprise-QA'
+  values:
+    - 'Enterprise-QA'
+    - 'Release'
+
+- name: release_notes
+  displayName: Release Notes
+  type: string
+  default: 'Release Notes'
+  
+# This parameter enables/disables iOS Simulator forced build upload to Pipelines Artifacts (ignoring `develop` branch condition).
+# Optional. Default is `false`.
+- name: force_upload_simulator_build
+  displayName: Force simulator build upload to Pipelines Artifacts (Debug configuration)
+  type: boolean
+  default: false
+  
+# This parameter enables/disables SauceLabs forced build upload (ignoring `develop` branch condition).
+# Optional. Default is `false`.
+- name: force_upload_saucelabs_build
+  displayName: Force device build upload to SauceLabs (Enterprise-QA configuration)
+  type: boolean
+  default: false
+
+# # work-around for the wonky submodule handling
+# resources:
+#   repositories:
+#     - repository: 'costco_shared'
+#       type: github
+#       name: 'costcomobility/Costco-Shared'
+#       ref: 'refs/heads/master'
+#       endpoint: 'mobility-service-connection'
+
+# these will pick up PR merges to the branches
+trigger:
+  branches:
+    include:
+      - develop
+      - releases/release-*
+      - hotfix-*
+
+# builds will trigger on pull requests against specific branches (TBD ?)
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - develop
+      - releases/release-*
+      - hotfix-*
+
+# shared across jobs and stages
+variables:
+- name: workspace
+  value: $(Build.SourcesDirectory)
+- name: git_api_url
+  value: 'https://github.com/nxt-costco-com/costco-ios'
+- name: saucelabs_api
+  value: 'https://api.us-west-1.saucelabs.com/v1/storage/upload'
+- name: saucelabs_url
+  value: 'http://saucelabs.com/rest/v1/storage/ebusinessautomation'
+- name: saucelabs_realdevice_url
+  value: 'https://app.testobject.com:443/api/storage/upload'
+- name: saucelabs_package_alias
+  value: 'CostcoDebug.zip'
+- name: saucelabs_ipa_alias
+  value: 'CostcoRelease.ipa'
+- name: veracode_url
+  value: 'https://tools.veracode.com/integrations/xcode/com.veracode.mobileapplicationpackager.dmg'
+- name: enterprise_team_id
+  value: 'TGWXEY4D6F'
+- name: appstore_team_id
+  value: 'MCL67DL73Q'
+- name: appcenter_endpoint
+  value: 'appcenter-service-connection'
+- name: build_number
+  value: $[counter(variables['Build.DefinitionName'], 1742)]
+- name: macos
+  value: 'macOS-15'
+- name: ubuntu
+  value: 'ubuntu-latest'
+- name: scheme
+  value: 'Costco'
+- name: xcode_version
+  value: '26.2'
+- name: os_version
+  value: '26.2'
+- group: costco-ios-ghe
+
+stages:
+  # Build and package IPA's
+  - stage: Build
+    condition: in(variables['Build.Reason'], 'Manual', 'IndividualCI', 'BatchedCI')
+    jobs:
+      # classify the incoming pull-request trigger
+      - template: '.azure-pipeline-templates/pr-state-job-template.yml'
+        parameters:
+          name: Classify
+          variable: pull_request
+
+      - job: Debug
+        displayName: Build (Enterprise-QA)
+        dependsOn: Classify
+        condition: ne(dependencies.Classify.outputs['pull_request.ID'], '')
+
+        pool:
+          vmImage: '$(macos)'
+
+        variables:
+          PR_ID: $[ dependencies.Classify.outputs['pull_request.ID'] ]
+          PR_MILESTONE: $[ dependencies.Classify.outputs['pull_request.MILESTONE'] ]
+          PR_RELEASE_NOTES: $[ dependencies.Classify.outputs['pull_request.RELEASE_NOTES'] ]
+
+        steps:
+          # execute the build
+          - template: '.azure-pipeline-templates/build-task-template.yml'
+            parameters:
+              configuration: 'Enterprise-QA'
+
+      # release build executes if PR = closed and target branch is either 'release-*' or 'hotfix-*'
+      - job: Release
+        displayName: Build (Release)
+        dependsOn: Classify
+        condition: |
+          and(
+            ne(dependencies.Classify.outputs['pull_request.ID'], ''),
+            or(
+              contains(variables['Build.SourceBranch'], 'release'),
+              contains(variables['Build.SourceBranch'], 'hotfix')
+            )
+          )
+
+        pool:
+          vmImage: '$(macos)'
+
+        variables:
+          PR_ID: $[ dependencies.Classify.outputs['pull_request.ID'] ]
+          PR_MILESTONE: $[ dependencies.Classify.outputs['pull_request.MILESTONE'] ]
+          PR_RELEASE_NOTES: $[ dependencies.Classify.outputs['pull_request.RELEASE_NOTES'] ]
+
+        steps:
+          # execute the build
+          - template: '.azure-pipeline-templates/build-task-template.yml'
+            parameters:
+              configuration: 'Release'
+
+      # build for test platforms (AppCenter and SauceLabs)
+      - job: Testing
+        displayName: Build (Build For Testing)
+        dependsOn: Classify
+        # Force run job if global input parameter `force_upload_simulator_build` or `force_upload_saucelabs_build`
+        # is manually set to `true`. (To produce artifacts for further upload to Azure Pipelines or SauceLabs).
+        # Otherwise run only for `develop` branch AND if pull request id exists.
+        condition: |
+          or(
+            eq(${{ parameters.force_upload_simulator_build }}, true),
+            eq(${{ parameters.force_upload_saucelabs_build }}, true),
+            and(
+                ne(dependencies.Classify.outputs['pull_request.ID'], ''),
+                contains(variables['Build.SourceBranch'], 'develop')
+            )
+          )
+
+        pool:
+          vmImage: '$(macos)'
+
+        variables:
+          XCUI_TEST_BUILD_PATH: '$(workspace)/derivedData/Build/Products/Debug-iphonesimulator/'
+
+        steps:
+          - checkout: self
+            fetchDepth: 1 
+            fetchTags: false 
+            displayName: Code Checkout
+
+          # # submodules credentials aren't handled properly
+          # - checkout: 'costco_shared'
+          #   displayName: Fetch submodule
+          #   persistCredentials: true
+
+          # # create a symlink for the submodule repo
+          # - task: Bash@3
+          #   displayName: Link submodule
+          #   inputs:
+          #     targetType: 'inline'
+          #     workingDirectory: $(workspace)
+          #     script: |
+          #       set -e
+          #       rm -rf Costco-Shared
+          #       ln -s $(Build.SourcesDirectory)/Costco-Shared Costco-Shared
+          - task: Bash@3
+            displayName: Decrypt secure files
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(workspace)/Costco/Signing
+              script: |
+                #!/bin/bash
+                set -e
+                for f in $(find . -name "*.enc" | grep ${{ parameters.configuration }}); do
+                  echo "decrypting file: ${f%.*}"
+                  openssl des3 -d -in $f -out ${f%.*} -k $(cipher)
+                  rm -f $f
+                done
+                echo "decrypting noknok ssh key"
+                openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k $(cipher)
+                echo "listing decrypted files .."
+                ls -altr
+          - task: Bash@3
+            displayName: Install Noknok SSH deploy key
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(workspace)/Costco/Signing
+              script: |
+                #!/bin/bash
+                set -e
+                PASS="$(NOK_PWD)"
+                SSH_DIR="$HOME/.ssh"
+                SSH_CONFIG="$SSH_DIR/config"
+                KEY_PATH="$(pwd)/noknok_deploy_key"
+                mkdir -p "$SSH_DIR"
+                chmod 700 "$SSH_DIR"
+                if ! grep -q "UseKeychain" "$SSH_CONFIG" 2>/dev/null; then
+                  echo "Adding macOS Keychain rules to SSH config..."
+                  cat > "$SSH_CONFIG" << EOF
+                Host github.com
+                  HostName github.com
+                  User git
+                  IdentityFile $KEY_PATH
+                  IdentitiesOnly yes
+                  UseKeychain yes
+                  AddKeysToAgent yes
+                  StrictHostKeyChecking no
+                EOF
+                  chmod 600 "$SSH_CONFIG"
+                fi
+                chmod 600 "$SSH_CONFIG"
+                chmod 600 "$KEY_PATH"
+                eval "$(ssh-agent -s)"
+                echo "Unlocking and adding the key to the agent..."
+                echo "$PASS" | ssh-add "$KEY_PATH"
+                echo "Currently loaded keys:"
+                ssh-add -l
+                echo "Setting pipeline variable for git SSH..."
+                echo "##vso[task.setvariable variable=GIT_SSH_COMMAND]ssh -i $KEY_PATH -o IdentitiesOnly=yes"
+                echo "##vso[task.setvariable variable=SSH_AUTH_SOCK]$SSH_AUTH_SOCK"
+                echo "##vso[task.setvariable variable=SSH_AGENT_PID]$SSH_AGENT_PID"
+                ssh -T git@github.com || true
+                git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+
+          # set a target simulator
+          - task: Bash@3
+            displayName: Set Target Simulator
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                echo "Setting xcode version to: $(xcode_version) .."
+                sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+                simulators=$(xcrun xctrace list devices | grep -i iphone | grep -i pro  | grep -v "+")
+                # set the target simulator; middle of the list is as good as any so we don't hard-code
+                (( index = $(echo "$simulators" | wc -l) / 2 ))
+
+                # grab the full device name
+                simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
+                device_name=$(echo $simulator | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
+
+                echo "##vso[task.setvariable variable=SIMULATOR]${device_name}"
+                echo "Auto-selected iOS simulator: ${device_name}"
+
+                # Disabled the os_version auto select script because the same simulator can be on different os versions.
+                # set the OS version
+                # os_version=$(echo $simulator | awk -F'[()]' '{print $2}')
+                # echo "##vso[task.setvariable variable=OSVERSION]${os_version}"
+                # echo "Auto-selected iOS version: ${os_version}"
+                
+                # set the OS version
+                echo "##vso[task.setvariable variable=OSVERSION]$(os_version)"
+                echo "Setting iOS version: $(os_version) .."
+
+                # set the simulator SDK
+                simulator_sdk=$(xcodebuild -showsdks | grep iphonesimulator | awk -F"-sdk" '{print $NF}' | xargs)
+                echo "##vso[task.setvariable variable=SIMULATOR_SDK]${simulator_sdk}"
+                echo "Auto-selected SDK version: ${simulator_sdk}"
+
+          # List available runtimes
+          - task: Bash@3
+            displayName: 'list runtimes'
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+
+                xcrun simctl list runtimes
+
+          # install distributions
+          - task: Bash@3
+            displayName: 'Install Distributions'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo 'Setting xcode version: $(xcode_version)'
+                sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+                version=$(echo ${_sdk} | grep -oE '[0-9]+\.[0-9]+')
+                echo "$version"
+
+                if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+                  echo "Distribution SDK is already present"
+                else
+                  echo "Required SDK not available, Installing the verson ${_sdk}"
+                  cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+                  xcodebuild -downloadPlatform iOS -buildVersion $(version)
+                  echo "Installed the distributions "
+                fi     
+
+                
+          # execute the test build
+          - task: Xcode@5
+            displayName: Build (Build for testing)
+            env:
+              GIT_SSH_COMMAND: $(GIT_SSH_COMMAND)
+              SSH_AUTH_SOCK: $(SSH_AUTH_SOCK)
+              SSH_AGENT_PID: $(SSH_AGENT_PID)
+            inputs:
+              actions: 'clean build-for-testing'
+              configuration: 'Debug'
+              sdk: '$(SIMULATOR_SDK)'
+              xcWorkspacePath: $(workspace)/Costco/Costco.xcworkspace
+              scheme: $(scheme)
+              args: '-derivedDataPath $(workspace)/derivedData -destination "platform=iOS Simulator,name=$(SIMULATOR),OS=$(OSVERSION)"'
+              useXcpretty: true
+
+          # archive the test directory for AppCenter
+          - task: ArchiveFiles@2
+            displayName: Archive Test Artifacts
+            inputs:
+              rootFolderOrFile: '$(XCUI_TEST_BUILD_PATH)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(build_number)-TestBuild.zip'
+              replaceExistingArchive: true
+              quiet: true
+
+          - task: Bash@3
+            displayName: Prepare SauceLabs artifact
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                app=$(find -L $(XCUI_TEST_BUILD_PATH) -name "*.app" 2>/dev/null|grep -iv "\-runner")
+                pushd $(dirname "${app}") >/dev/null
+
+                echo "Archiving: $(basename "${app}")"
+                zip -r $(Build.ArtifactStagingDirectory)/CostcoDebug.zip "$(basename "${app}")"
+
+          # publish artifacts
+          - task: PublishBuildArtifacts@1
+            displayName: Publish test artifacts
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'testing'
+              publishLocation: 'Container'
+
+      # manual builds
+      - job: Manual
+        displayName: Build (Manual)
+        condition: eq(variables['Build.Reason'], 'Manual')
+
+        pool:
+          vmImage: '$(macos)'
+
+        steps:
+          - task: Bash@3
+            displayName: Set up parameters
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                echo "##vso[task.setvariable variable=PR_RELEASE_NOTES]${{ parameters.release_notes }}"
+                echo "##vso[task.setvariable variable=PR_MILESTONE]${none}"
+
+          # execute the build
+          - template: '.azure-pipeline-templates/build-task-template.yml'
+            parameters:
+              configuration: ${{ parameters.configuration }}
+
+  # CI stage executes independently (PR = open)
+  - stage: CI
+    dependsOn: []
+    condition: eq(variables['Build.Reason'], 'PullRequest')
+    jobs:
+      - job: CI
+        displayName: Build (CI)
+
+        pool:
+          vmImage: $(macos)
+
+        steps:
+          - checkout: self
+            fetchDepth: 1 
+            fetchTags: false 
+            displayName: Code Checkout
+            persistCredentials: true
+
+          # # submodules credentials aren't handled properly
+          # - checkout: 'costco_shared'
+          #   displayName: Fetch submodule
+          #   persistCredentials: true
+
+          # # create a symlink for the submodule repo
+          # - task: Bash@3
+          #   displayName: Link submodule
+          #   inputs:
+          #     targetType: 'inline'
+          #     workingDirectory: $(workspace)
+          #     script: |
+          #       set -e
+          #       rm -rf Costco-Shared
+          #       ln -s $(Build.SourcesDirectory)/Costco-Shared Costco-Shared
+
+          # check for merge errors
+          - task: Bash@3
+            displayName: Check Merge Status
+            inputs:
+              workingDirectory: $(workspace)
+              targetType: 'inline'
+              failOnStderr: true
+              script: |
+                echo 'Testing merge ..'
+                (
+                  set -e
+                  # create a local branch from the feature branch
+                  git checkout -b local/ci
+
+                  # set base git configurations
+                  git config user.email iseas@costco.com
+                  git config user.name `hostname`
+
+                  # merge the feature to the target
+                  git checkout $(system.pullRequest.targetBranch) && git pull
+                  git merge --no-ff local/ci
+                  merge_status=$?
+
+                  exit $merge_status
+                ) >/dev/null 2>&1
+
+                if [ $? -ne 0 ]; then
+                  echo 'Found merge errors'
+                  exit 1
+                fi
+
+                echo 'No merge issues'
+            # decrypt signing certs and provisioning profiles
+          - task: Bash@3
+            displayName: Decrypt secure files
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(workspace)/Costco/Signing
+              script: |
+                #!/bin/bash
+                set -e
+                for f in $(find . -name "*.enc" | grep ${{ parameters.configuration }}); do
+                  echo "decrypting file: ${f%.*}"
+                  openssl des3 -d -in $f -out ${f%.*} -k $(cipher)
+                  rm -f $f
+                done
+                echo "decrypting noknok ssh key" 
+                openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k $(cipher)
+                echo "listing decrypted files .."
+                ls -altr
+          - task: Bash@3
+            displayName: Install Noknok SSH deploy key
+            inputs:
+              targetType: 'inline'
+              workingDirectory: $(workspace)/Costco/Signing
+              script: |
+                #!/bin/bash
+                set -e
+                PASS="$(NOK_PWD)"
+                SSH_DIR="$HOME/.ssh"
+                SSH_CONFIG="$SSH_DIR/config"
+                KEY_PATH="$(pwd)/noknok_deploy_key"
+                mkdir -p "$SSH_DIR"
+                chmod 700 "$SSH_DIR"
+                if ! grep -q "UseKeychain" "$SSH_CONFIG" 2>/dev/null; then
+                  echo "Adding macOS Keychain rules to SSH config..."
+                  cat > "$SSH_CONFIG" << EOF
+                Host github.com
+                  HostName github.com
+                  User git
+                  IdentityFile $KEY_PATH
+                  IdentitiesOnly yes
+                  UseKeychain yes
+                  AddKeysToAgent yes
+                  StrictHostKeyChecking no
+                EOF
+                  chmod 600 "$SSH_CONFIG"
+                fi
+                chmod 600 "$SSH_CONFIG"
+                chmod 600 "$KEY_PATH"
+                eval "$(ssh-agent -s)"
+                echo "Unlocking and adding the key to the agent..."
+                echo "$PASS" | ssh-add "$KEY_PATH"
+                echo "Currently loaded keys:"
+                ssh-add -l
+                echo "Setting pipeline variable for git SSH..."
+                echo "##vso[task.setvariable variable=GIT_SSH_COMMAND]ssh -i $KEY_PATH -o IdentitiesOnly=yes"
+                echo "##vso[task.setvariable variable=SSH_AUTH_SOCK]$SSH_AUTH_SOCK"
+                echo "##vso[task.setvariable variable=SSH_AGENT_PID]$SSH_AGENT_PID"
+                ssh -T git@github.com || true
+                git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+          # set a target simulator
+          - task: Bash@3
+            displayName: Set Target Simulator
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                echo "Setting xcode version to: $(xcode_version) .."
+                sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+                simulators=$(xcrun xctrace list devices | grep -i iphone | grep -i pro  | grep -v "+")
+                # set the target simulator; middle of the list is as good as any so we don't hard-code
+                (( index = $(echo "$simulators" | wc -l) / 2 ))
+
+                # grab the full device name
+                simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
+                device_name=$(echo $simulator | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
+                
+                echo "##vso[task.setvariable variable=SIMULATOR]${device_name}"
+                echo "Auto-selected iOS simulator: ${device_name}"
+
+                # Disabled the following os version auto select script because the same simulator can be on different os versions.
+                # set the OS version
+                # os_version=$(echo $simulator | awk -F'[()]' '{print $2}')
+                # echo "##vso[task.setvariable variable=OSVERSION]${os_version}"
+                # echo "Auto-selected iOS version: ${os_version}"
+                
+                # set the OS version
+                echo "##vso[task.setvariable variable=OSVERSION]$(os_version)"
+                echo "Setting iOS version: $(os_version) .."
+
+          # set the SDK
+          - task: Bash@3
+            displayName: Set SDK
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                _sdk="$(xcodebuild -showsdks | grep -i iphonesimulator | awk '{print $NF}' | xargs)"
+                echo "##vso[task.setvariable variable=SDK]${_sdk}"
+                echo "iOS Simulator SDK: ${_sdk}"
+
+          # set timezone
+          - script: sudo systemsetup -settimezone America/Los_Angeles
+            displayName: Set Time Zone
+
+
+          # List available runtimes
+          - task: Bash@3
+            displayName: 'list runtimes'
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+
+                xcrun simctl list runtimes
+
+          # install distributions
+          - task: Bash@3
+            displayName: 'Install Distributions'
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo 'Setting xcode version: $(xcode_version)'
+                sudo xcode-select -switch /Applications/Xcode_$(xcode_version).app
+
+                version=$(echo ${_sdk} | grep -oE '[0-9]+\.[0-9]+')
+                echo "$version"
+
+                if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+                  echo "Distribution SDK is already present"
+                else
+                  echo "Required SDK not available, Installing the verson ${_sdk}"
+                  cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+                  xcodebuild -downloadPlatform iOS -buildVersion $(version)
+                  echo "Installed the distributions "
+                fi     
+
+          # execute the build and launch the console and UI tests
+          - task: Xcode@5
+            displayName: CI Build
+            env:
+                GIT_SSH_COMMAND: $(GIT_SSH_COMMAND)
+                SSH_AUTH_SOCK: $(SSH_AUTH_SOCK)
+                SSH_AGENT_PID: $(SSH_AGENT_PID)
+            inputs:
+              actions: 'test'
+              sdk: $(SDK)
+              configuration: 'Debug'
+              xcWorkspacePath: $(workspace)/Costco/Costco.xcworkspace
+              scheme: $(scheme)
+              # xcodeVersion: 'default'
+              xcodeVersion: specifyPath
+              xcodeDeveloperDir: '/Applications/Xcode_$(xcode_version).app'
+              packageApp: false
+              signingOption: 'nosign'
+              # destinationPlatformOption: iOS
+              # destinationTypeOption: 'simulators'
+              # destinationSimulators: $(SIMULATOR)
+              # args: '-parallel-testing-enabled NO'
+              args: '-parallel-testing-enabled NO -derivedDataPath $(workspace)/derivedData -destination "platform=iOS Simulator,name=$(SIMULATOR),OS=$(OSVERSION)"'
+              useXcpretty: true
+              publishJUnitResults: true
+
+  # Aggregated Testing Platforms.  TBD: This stage jobs are only run on changes in "develop" (?)
+  - stage: Test
+    dependsOn: Build
+
+    jobs:
+      # prepare artifacts for AppCenter testing
+      - job: AppCenter
+        displayName: AppCenter Tests
+        condition: contains(variables['Build.SourceBranch'], 'develop')
+
+        pool:
+          vmImage: '$(macos)'
+
+        variables:
+          APP_CENTER_DEVICES: 'apps-lxue/iphone-14-pro'
+
+        steps:
+          - checkout: none
+
+          # download the debug IPA
+          - task: DownloadBuildArtifacts@0
+            displayName: Download Debug IPA
+            inputs:
+              artifactName: 'build'
+              itemPattern: 'build/*Enterprise*.ipa'
+
+          - task: Bash@3
+            displayName: List build artifacts
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                find $(System.ArtifactsDirectory) -type f
+
+          # download test build artifacts
+          - task: DownloadBuildArtifacts@0
+            displayName: Download Test Directory Artifact
+            inputs:
+              artifactName: 'testing'
+
+          - task: Bash@3
+            displayName: Extract Test Directory Artifact
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                archive=$(find $(System.ArtifactsDirectory)/testing -name *Test*.zip)
+                unzip -q -d $(Build.SourcesDirectory)/appcenter ${archive}
+
+          # install appcenter CLI just in case
+          - task: Bash@3
+            displayName: Install AppCenter CLI
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set +x
+                
+                # install appcenter cli ?
+                npm list -g | grep -i appcenter
+                if [ $? -ne 0 ]; then
+                echo 'Installing appcenter-cli ..'
+                npm install -g appcenter-cli || exit 1
+                fi
+                
+                # don't fail the step if this fails
+                (npm list -g | grep -i appcenter) || \
+                  echo 'WARNING: Missing AppCenter CLI' && \
+                  appcenter login --token $(appcenter_token)
+
+          # submit for testing (disabled -- )
+          - task: AppCenterTest@1
+            displayName: Launch AppCenter Tests (disabled -- no licenses)
+            enabled: false
+            inputs:
+              appFile: $(System.ArtifactsDirectory)/*/*Enterprise*.ipa
+              prepareTests: true
+              frameworkOption: 'xcuitest'
+              xcUITestBuildDirectory: '$(Build.SourcesDirectory)/appcenter'
+              runTests: true
+              credentialsOption: 'serviceEndpoint'
+              serverEndpoint: '$(appcenter_endpoint)'
+              appSlug: 'apps-lxue/costco-ios-beta'
+              devices: '$(APP_CENTER_DEVICES)'
+              localeOption: 'en_US'
+              skipWaitingForResults: true
+
+      # saucelabs upload
+      - job: SauceLabs
+        displayName: SauceLabs Upload
+        # Force run job if global input parameter `force_upload_saucelabs_build` is manually set to `true`.
+        # Otherwise run only for `develop` branch.
+        condition: |
+          or(
+            eq(${{ parameters.force_upload_saucelabs_build }}, true),
+            contains(variables['Build.SourceBranch'], 'develop')
+          )
+
+        pool:
+          vmImage: $(macos)
+
+        steps:
+          - checkout: none
+          - task: DownloadBuildArtifacts@0
+            displayName: Download Test artifacts
+            inputs:
+              artifactName: 'testing'
+              itemPattern: 'testing/*CostcoDebug*'
+          - task: DownloadBuildArtifacts@0
+            displayName: Download Test artifacts
+            inputs:
+              artifactName: 'build'
+              itemPattern: 'build/*Enterprise-QA*'
+
+          # locate the artifact
+          - task: Bash@3
+            displayName: Prepare SauceLabs artifact
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                app=$(find $(System.ArtifactsDirectory) -name *CostcoDebug.zip)
+                echo "Found archived app: $(basename "${app}")"
+                echo "##vso[task.setvariable variable=SAUCELABS_PACKAGE]${app}"
+                ipa=$(find $(System.ArtifactsDirectory) -name *Enterprise-QA.ipa)
+                echo "Found archived app: $(basename "${ipa}")"
+                echo "##vso[task.setvariable variable=SAUCELABS_IPA]${ipa}"
+
+          # upload
+          - task: Bash@3
+            displayName: Upload to SauceLabs
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                if [[ -f "$(SAUCELABS_PACKAGE)" ]]; then
+                  echo "uploading $(basename $(SAUCELABS_PACKAGE)) to saucelabs .."
+                  curl -v -F "payload=@$(SAUCELABS_PACKAGE)" -F name=$(saucelabs_package_alias) \
+                    -u $(saucelabs) $(saucelabs_api)
+
+                  echo "uploading $(basename $(SAUCELABS_IPA)) to saucelabs .."
+                  curl -v -F "payload=@$(SAUCELABS_IPA)" -F name=$(saucelabs_ipa_alias) \
+                    -u $(saucelabs) $(saucelabs_api)
+                else
+                  echo 'WARNING: Missing SauceLabs artifact'
+                fi
+
+      - job: Veracode
+        displayName: Veracode upload
+        condition: contains(variables['Build.SourceBranch'], 'develop')
+
+        pool:
+          vmImage: '$(macos)'
+
+        variables:
+          veracode_packager: 'vcxcodepkg'
+
+        steps:
+          - checkout: none
+
+          # download the xcode archive
+          - task: DownloadBuildArtifacts@0
+            enabled: false
+            displayName: Download Xcode Archive
+            inputs:
+              artifactName: 'build'
+              # itemPattern: 'build/*.zip'
+
+          - task: Bash@3
+            displayName: List build artifacts
+            enabled: false
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                find $(System.ArtifactsDirectory) -type d
+
+          - task: Bash@3
+            displayName: Install the Veracode packager
+            enabled: false
+            inputs:
+              targetType: 'inline'
+              script: |
+                #!/bin/bash
+                set -e
+                curl -ks -o $(veracode_packager).dmg $(veracode_url)
+
+                # mount the installer
+                volume=$(sudo hdiutil attach $(veracode_packager).dmg | tail -n1)
+                mounted="/Volumes/$(echo $volume | awk -F "/Volumes/" '{print $NF}')"
+                echo "Mounted installer volume: $mounted"
+
+                echo "Copying veracode packaging utility .."
+                find "$mounted" -name $(veracode_packager) -exec cp {} . \;
+                export PATH=$PATH:$(pwd)
+
+                # unmount after copying the binary
+                echo "Unmounting $(echo $volume | awk '{print $1}') .."
+                sudo hdiutil detach $(echo $volume | awk '{print $1}')
+
+                if [ ! -e "$(veracode_packager)" ]; then
+                  echo 'Warning: Failed to extract the veracode packaging utility'
+                else
+                  archive=$(find $(System.ArtifactsDirectory) -name *.xcarchive.zip)
+                  unzip -qd archive $(find $(System.ArtifactsDirectory) -name *.xcarchive.zip)
+                  echo "Packaging $(basename ${archive%.*}) for Veracode .."
+
+                  ls -altr archive
+
+                  $(veracode_packager) -a "$(find ./archive -name "*.xcarchive" -type d)" --verbose --noui
+                fi
+
+                cp -a ~/Documents/MobileApplicationPackager/* . $(Build.ArtifactStagingDirectory)/
+                ls -altr $(Build.ArtifactStagingDirectory)/
+
+          # publish artifacts so we can come back to it later
+          - task: PublishBuildArtifacts@1
+            displayName: Publish artifacts
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'build'
+              publishLocation: 'Container'
+
+          # we don't have credentials to set up a service connection
+          - task: Veracode@3
+            displayName: Upload
+            enabled: false
+            inputs:
+              ConnectionDetailsSelection: 'Endpoint'
+              veracodeAppProfile: '$(system.teamProject)'
+              version: '$(build.buildNumber)'
+              filepath: '$(build.artifactstagingdirectory)'
+              createSandBox: false
+              createProfile: false
+              failTheBuildIfVeracodeScanDidNotInitiate: false
+              scanStatusCheckInterval: '60'
+              importResults: false
+              failBuildOnPolicyFail: false
+
+  # app distribution
+  - stage: Distribute
+    dependsOn: Build
+
+    pool:
+      vmImage: '$(macos)'
+
+    variables:
+      group: mobility-apps  
+
+    jobs:
+      - job: Debug
+        displayName: AppCenter Upload (Enterprise-QA)
+
+        steps:
+          - template: '.azure-pipeline-templates/distribute-task-template.yml'
+            parameters:
+              configuration: 'Enterprise-QA'
+
+      - job: Release
+        displayName: AppCenter Upload (Release)
+
+        steps:
+          - template: '.azure-pipeline-templates/distribute-task-template.yml'
+            parameters:
+              configuration: 'Release'
+
+          # - task: Bash@3
+          #   displayName: Publish to iTunes Connect
+          #   condition: ne(variables['IPA_FILE'], '')
+          #   inputs:
+          #     targetType: 'inline'
+          #     script: |
+          #       #!/bin/bash
+          #       set -e
+          #       credentials="$(appstore_id)"
+          #       echo "$credentials"
+
+          #       # add xcode executables to the system path
+          #       export PATH="$(xcode-select --print-path)/usr/bin:/usr/local/bin:/usr/libexec:${PATH}"
+
+          #       echo 'executing AppStore submission ..'
+          #       for phase in validate upload; do
+          #         altool --$phase-app \
+          #           -f "$(IPA_FILE)" \
+          #           -t iOS \
+          #           -u ${credentials%:*} \
+          #           -p ${credentials#*:}
+
+          #         if [[ $? -ne 0 ]]; then
+          #           echo "App submission failed in $phase phase"
+          #           exit 1
+          #         fi
+          #       done
+
+          - task: AppStoreRelease@1
+            displayName: 'Publish to the apple App Store'
+            inputs:
+              serviceEndpoint: 'App Store Connect' 
+              appIdentifier: com.costco.costco
+              ipaPath: '$(IPA_FILE)'
+              shouldSkipWaitingForProcessing: true
+              shouldSkipSubmission: true
+
+  # - stage: create_pull_request
+  #   dependsOn: Distribute
+  #   condition: |
+  #       and(ne(dependencies.Classify.outputs['pull_request.ID'], ''),startsWith(variables['Build.SourceBranch'], 'releases/release-'))
+  #       and(startsWith(variables['Build.SourceBranchName'], 'release-'),eq(variables['Build.Reason'], 'IndividualCI'))
+  #   displayName: Create a Pull Request to Develop branch
+  #   jobs:
+  #     - job: Create_Pull_request
+  #       displayName: Create a Pull Request 
+  #       pool: 
+  #         vmImage: '$(macos)'
+  #       steps:
+  #        - checkout: self
+  #          displayName: Code Checkout
+  
+  #        - task: PowerShell@2
+  #          displayName: Create a pull request
+  #          inputs: 
+  #            targetType: "Inline"
+  #            script: |
+  #               gh auth login --with-token $(GIT_TOKEN)
+  #               gh pr create --base develop --head $(Build.SourceBranch) --title "[MERGE BACK]Changes from Release fix branch ($(Build.SourceBranch)) to the Develop" --body " Auto Generated PR from Release branch fixes from $(Build.SourceBranch) to Develop Branch for $(dependencies.Classify.outputs['pull_request.ID'])"
+  #               gh pr create --base develop --head $(Build.SourceBranch) --title "[MERGE BACK]Changes from Release fix branch ($(Build.SourceBranch)) to the Develop" --body " Auto Generated PR from Release branch from $(Build.SourceBranch) to Develop Branch "
+  #          env:
+  #            GITHUB_TOKEN: $(GIT_TOKEN)   
