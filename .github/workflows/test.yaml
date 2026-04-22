@@ -1,0 +1,27 @@
+name: test
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: 'Costco iOS branch name'
+        required: true
+        default: 'develop'
+        type: string
+
+
+jobs:
+  checkout:
+      name: checkout
+      runs-on: macOS-15
+      timeout-minutes: 180
+      env:
+        BRANCH_NAME: ${{ github.event.inputs.branch_name }}
+        BUILD_NUMBER: ${{ github.run_number }}
+      steps:
+        - name: Checkout Repo
+          uses: actions/checkout@v6
+          with:
+            fetch-depth: 1
+            fetch-tags: false
+            clean: true
