@@ -112,20 +112,62 @@ jobs:
           set -e
           # create a keychain and set it as the default
           keychain=$(pwd)/costco.keychain
-          security create-keychain -p $CIPHER $keychain
-          security list-keychains -s $keychain
+          security create-keychain -p "$CIPHER" "$keychain"
+          security list-keychains -s "$keychain"    
           # unlock the keychain for 30 minutes
-          security unlock-keychain -p $CIPHER $keychain
-          security set-keychain-settings -lut 1800 $keychain
-          security default-keychain -s $keychain
+          security unlock-keychain -p "$CIPHER" "$keychain"
+          security set-keychain-settings -lut 1800 "$keychain"
+          security default-keychain -s "$keychain"    
+          # Import all .p12 certificates
           for p in *.p12; do
-            echo "Importing: ${p}"
-            security import ./$p -k $keychain -P $CIPHER -A
-          done
-          echo "COSTCO_KEYCHAIN=${keychain}" >> $GITHUB_ENV
+            if [ -f "$p" ]; then
+              echo "Importing: $p"
+              security import "./$p" -k "$keychain" -P "$CIPHER" -A
+            fi
+          done 
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain"   
+          echo "COSTCO_KEYCHAIN=$keychain" >> $GITHUB_ENV
           echo "generated keychain: $COSTCO_KEYCHAIN"
 
 
-
-
-
+      - name: Install Noknok SSH deploy key
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          PASS: ${{ secrets.NOK_PWD }}
+        run: |
+          set -e
+          SSH_DIR="$HOME/.ssh"
+          SSH_CONFIG="$SSH_DIR/config"
+          KEY_PATH="$(pwd)/noknok_deploy_key"
+          mkdir -p "$SSH_DIR"
+          chmod 700 "$SSH_DIR"
+          # Create SSH config if not exists
+          if [ ! -f "$SSH_CONFIG" ] || ! grep -q "UseKeychain" "$SSH_CONFIG"; then
+            echo "Adding macOS Keychain rules to SSH config..."
+            cat > "$SSH_CONFIG" << EOF
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile $KEY_PATH
+            IdentitiesOnly yes
+            UseKeychain yes
+            AddKeysToAgent yes
+            StrictHostKeyChecking no
+          EOF
+            chmod 600 "$SSH_CONFIG"
+          fi
+          chmod 600 "$KEY_PATH"
+          # Start SSH agent
+          eval "$(ssh-agent -s)"
+          echo "Unlocking and adding the key to the agent..."
+          echo "$PASS" | ssh-add "$KEY_PATH"
+          echo "Currently loaded keys:"
+          ssh-add -l
+          # Export variables for next steps
+          echo "GIT_SSH_COMMAND=ssh -i $KEY_PATH -o IdentitiesOnly=yes" >> $GITHUB_ENV
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
+          # Test SSH
+          ssh -T git@github.com || true
+          # Test repo access
+          git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
