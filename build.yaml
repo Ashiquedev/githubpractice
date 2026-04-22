@@ -16,112 +16,116 @@ env:
   BUILD_NUMBER: ${{ github.run_number }}
   ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
   APPSTORE_TEAM_ID: 'MCL67DL73Q'
-  CONFIG: ${{ github.event.inputs.configuration }}
+
 jobs:
-  checkout:
-      name: checkout
-      runs-on: macOS-15
-      timeout-minutes: 180
-      env:
-        BUILD_NUMBER: ${{ github.run_number }}
-      steps:
-        - name: Checkout Repo
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 1
-            fetch-tags: false
-            clean: true
+  build:
+    name: Build iOS App
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CONFIG: ${{ github.event.inputs.configuration }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
 
-        - name: Get and set initial version (agvtool)
-          working-directory: ${{ github.workspace }}/Costco
-          run: |
-            set -e
-            ipa_version=$(agvtool mvers -terse1 || echo "")
-            agvtool new-version -all ${{ env.BUILD_NUMBER }} || true
-            echo "Marketing version (CFBundleShortVersionString): ${ipa_version}"
-            echo "Technical version (CFBundleVersion): ${{ env.BUILD_NUMBER }}"
-            #ipa_version+="_${{ env.BUILD_NUMBER }}"
-            #echo "IPA_VERSION=$ipa_version" >> $GITHUB_ENV
-            full_version="${ipa_version}_${{ env.BUILD_NUMBER }}"
-            echo "IPA_VERSION=${full_version}" >> $GITHUB_ENV
+      - name: Version increment
+        working-directory: ${{ github.workspace }}/Costco
+        run: |
+          set -e
+          ipa_version=$(agvtool mvers -terse1 || echo "")
+          agvtool new-version -all ${{ env.BUILD_NUMBER }} || true
+          echo "Marketing version (CFBundleShortVersionString): ${ipa_version}"
+          echo "Technical version (CFBundleVersion): ${{ env.BUILD_NUMBER }}"
+          full_version="${ipa_version}_${{ env.BUILD_NUMBER }}"
+          echo "IPA_VERSION=${full_version}" >> $GITHUB_ENV
 
-            #ipa_version=$(agvtool mvers -terse1)
-            #if [ $? -ne 0 ] || [ -z "$ipa_version" ]; then
-            #  echo "⚠️ Warning: agvtool failed to find version. Check if you are in the correct directory."
-            #  ipa_version="0.0.0"
-            #else
-            #  echo "✅ Successfully retrieved version: $ipa_version"
-            #fi
-            #
-            #echo "IPA_VERSION=${ipa_version}_${{ env.BUILD_NUMBER }}" >> $GITHUB_ENV
+      - name: Generate export options preference list
+        env:
+          CONFIGURATION: ${{ github.event.inputs.configuration }}
+        run: |
+          set -e
+          export PATH=$PATH:/usr/libexec
+          export_options="${GITHUB_WORKSPACE}/exportOptions-${CONFIGURATION}.plist"
+          bundle_id='com.costco.costco'
+          group_identifier='group.com.costco.costco'
+          
+          echo "generating: ${export_options}"
+          
+          case ${CONFIGURATION} in
+            Enterprise-QA)
+              PlistBuddy -c "add method string enterprise" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:${bundle_id}.qa string Costco Mobility QA" "$export_options"
+              PlistBuddy -c "add teamID string ${{ env.ENTERPRISE_TEAM_ID }}" "$export_options"
+              PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.notification-extension string Costco Mobility QA Notification Extension" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.DMCWidget string Costco Mobility QA DMC Widget Extension" "$export_options"
+              ;;
+            Release)
+              PlistBuddy -c "add method string app-store" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:${bundle_id} string Costco App Store" "$export_options"
+              PlistBuddy -c "add teamID string ${{ env.APPSTORE_TEAM_ID }}" "$export_options"
+              PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:com.costco.costco.notification-extension string Costco App Notification Extension" "$export_options"
+              PlistBuddy -c "add :provisioningProfiles:com.costco.costco.DMCWidget string Costco App DMC Widget Extension" "$export_options"
+              ;;
+          esac
 
-        - name: Generate export options preference list
-          env:
-            CONFIGURATION: ${{ inputs.configuration }}
-          shell: bash
-          run: |
-            set -e
-            export PATH=$PATH:/usr/libexec
-            export_options="${GITHUB_WORKSPACE}/exportOptions-${CONFIGURATION}.plist"        
-            bundle_id='com.costco.costco'
-            group_identifier='group.com.costco.costco'
-            echo "generating: ${export_options}"
-            case ${CONFIGURATION} in
-              Enterprise-QA)
-                PlistBuddy -c "add method string enterprise" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:${bundle_id}.qa string Costco Mobility QA" "$export_options"
-                PlistBuddy -c "add teamID string ${{ env.ENTERPRISE_TEAM_ID }}" "$export_options"
-                PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.notification-extension string Costco Mobility QA Notification Extension" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:com.costco.costco.qa.DMCWidget string Costco Mobility QA DMC Widget Extension" "$export_options"
-                ;;
-              Release)
-                PlistBuddy -c "add method string app-store" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:${bundle_id} string Costco App Store" "$export_options"
-                PlistBuddy -c "add teamID string ${{ env.APPSTORE_TEAM_ID }}" "$export_options"
-                PlistBuddy -c "add com.apple.security.application-groups:0 string $group_identifier" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:com.costco.costco.notification-extension string Costco App Notification Extension" "$export_options"
-                PlistBuddy -c "add :provisioningProfiles:com.costco.costco.DMCWidget string Costco App DMC Widget Extension" "$export_options"
-                ;;
-            esac
-            PlistBuddy -c "add signingStyle string manual" "$export_options"
-            PlistBuddy -c "add signingCertificate string iPhone Distribution" "$export_options"
-            PlistBuddy -c "add compileBitcode bool false" "$export_options"
-            PlistBuddy -c "add uploadSymbols bool true" "$export_options"
-            PlistBuddy -c "add uploadBitcode bool false" "$export_options"
-            PlistBuddy -c "add stripSwiftSymbols bool true" "$export_options"
-            echo 'content:'
-            cat "$export_options"
-            echo "EXPORT_OPTIONS=$export_options" >> $GITHUB_ENV
+          PlistBuddy -c "add signingStyle string manual" "$export_options"
+          PlistBuddy -c "add signingCertificate string iPhone Distribution" "$export_options"
+          PlistBuddy -c "add compileBitcode bool false" "$export_options"
+          PlistBuddy -c "add uploadSymbols bool true" "$export_options"
+          PlistBuddy -c "add uploadBitcode bool false" "$export_options"
+          PlistBuddy -c "add stripSwiftSymbols bool true" "$export_options"
+
+          echo 'content:'
+          cat "$export_options"
+          echo "EXPORT_OPTIONS=${export_options}" >> $GITHUB_ENV
+    
+      - name:  Decrypt secure files
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          CONFIGURATION: ${{ github.event.inputs.configuration }}
+          CIPHER: ${{ secrets.CIPHER }}
+        run: |
+           set -e    
+           echo "Using configuration: $CONFIGURATION"
+           # Decrypt configuration-specific signing files
+           find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
+             echo "decrypting file: ${f%.*}"
+             openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
+             rm -f "$f"
+           done
+           # Decrypt SSH key
+           echo "decrypting noknok ssh key"
+           openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
+           echo "listing decrypted files .."
+           ls -altr
+
+      - name:  Create costco.keychain
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          CIPHER: ${{ secrets.CIPHER }}
+        run: |
+          set -e
+          # create a keychain and set it as the default
+          keychain=$(pwd)/costco.keychain
+          security create-keychain -p $CIPHER $keychain
+          security list-keychains -s $keychain
+          # unlock the keychain for 30 minutes
+          security unlock-keychain -p $CIPHER $keychain
+          security set-keychain-settings -lut 1800 $keychain
+          security default-keychain -s $keychain
+          for p in *.p12; do
+            echo "Importing: ${p}"
+            security import ./$p -k $keychain -P $CIPHER -A
+          done
+          echo "COSTCO_KEYCHAIN=${keychain}" >> $GITHUB_ENV
+          echo "generated keychain: $COSTCO_KEYCHAIN"
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-        - name: Clone Costco-iOS repo
-          run: |
-            echo "Using branch: $BRANCH_NAME"
-
-            git config --global url."https://x-access-token:${{ secrets.COSTCO_IOS_GITPAT }}@github.com/".insteadOf "https://github.com/"
-
-            echo "Checking if branch exists..."
-            git ls-remote --heads https://github.com/nxt-costco-com/costco-ios.git $BRANCH_NAME
-
-            if [ $? -ne 0 ]; then
-              echo " Branch $BRANCH_NAME does not exist"
-              exit 1
-            fi
-
-            git clone --branch $BRANCH_NAME --single-branch https://github.com/nxt-costco-com/costco-ios.git
-
-            echo "Listing contents of cloned directory:"
-            ls -R costco-ios
