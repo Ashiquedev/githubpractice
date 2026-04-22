@@ -16,7 +16,7 @@ env:
   BUILD_NUMBER: ${{ github.run_number }}
   ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
   APPSTORE_TEAM_ID: 'MCL67DL73Q'
-
+  XCODE_VERSION: '26.2'
 jobs:
   build:
     name: Build iOS App
@@ -192,37 +192,47 @@ jobs:
         # define provisioning profile variables
       - name: Install provisioning profiles
         working-directory: ${{ github.workspace }}/Costco/Signing
-        env:
-          CIPHER: ${{ secrets.CIPHER }}
-          COSTCO_KEYCHAIN: ${{ env.COSTCO_KEYCHAIN }}
         run: |
-            set -e
-            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
-            # profile=$(find . -name "*.*provision")
-    
-            for profile in $(find . -name "*.*provision"); do
-              echo "provisioning profile: $profile"
-              78787878787878
+          set -e
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles/
+
+          for profile in $(find . -name "*.*provision"); do
+            echo "provisioning profile: $profile"
+
             if [[ "$profile" == *"Notification"* ]]; then
-              ext_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              ext_uuid=$(grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}")
               ext_extension="${profile##*.}"
               cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$ext_uuid.$ext_extension"
               echo "Installing notification provisioning profile: $ext_uuid.$ext_extension"
-                      
+
             elif [[ "$profile" == *"Widget"* ]]; then
-              widget_uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              widget_uuid=$(grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}")
               widget_extension="${profile##*.}"
               cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$widget_uuid.$widget_extension"
               echo "Installing widget provisioning profile: $widget_uuid.$widget_extension"
-              
+
             else
-              uuid=`grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}"`
+              uuid=$(grep UUID -A1 -a "$profile" | grep -io "[-A-F0-9]\{36\}")
               extension="${profile##*.}"
               cp -a "$profile" ~/Library/MobileDevice/Provisioning\ Profiles/"$uuid.$extension"
               echo "Installing provisioning profile: $uuid.$extension"
             fi
-            done
-            
-            echo "PROVISIONING_PROFILE=$uuid" >> $GITHUB_ENV
-            echo "EXT_PROVISIONING_PROFILE=$ext_uuid" >> $GITHUB_ENV
-            echo "EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid" >> $GITHUB_ENV
+          done
+          echo "PROVISIONING_PROFILE=$uuid" >> $GITHUB_ENV
+          echo "EXT_PROVISIONING_PROFILE=$ext_uuid" >> $GITHUB_ENV
+          echo "EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid" >> $GITHUB_ENV
+
+          echo "Exported:"
+          echo "  PROVISIONING_PROFILE=$uuid"
+          echo "  EXT_PROVISIONING_PROFILE=$ext_uuid"
+          echo "  EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid"
+      - name: Set SDK
+        run: |
+            set -e
+            echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
+            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+            _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
+            echo "SDK=${_sdk}" >> $GITHUB_ENV
+            echo "Detected SDK: $_sdk"
+            xcodebuild -version
+
