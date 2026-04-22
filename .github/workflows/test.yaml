@@ -8,7 +8,11 @@ on:
         required: true
         default: 'develop'
         type: string
-
+env:
+  BUILD_NUMBER: ${{ github.run_number }}
+  ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
+  APPSTORE_TEAM_ID: 'MCL67DL73Q'
+  XCODE_VERSION: '26.2'
 
 jobs:
   checkout:
@@ -28,5 +32,8 @@ jobs:
         - name: Set SDK
           run: |
             set -e
-            echo "Using Xcode version:"
-            xcodebuild -version
+            echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
+            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app || true
+            _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
+            echo "SDK=${_sdk}" >> $GITHUB_ENV
+
