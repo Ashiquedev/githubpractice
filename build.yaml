@@ -83,26 +83,25 @@ jobs:
           echo 'content:'
           cat "$export_options"
           echo "EXPORT_OPTIONS=${export_options}" >> $GITHUB_ENV
-    
       - name:  Decrypt secure files
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
           CONFIGURATION: ${{ github.event.inputs.configuration }}
           CIPHER: ${{ secrets.CIPHER }}
         run: |
-           set -e    
-           echo "Using configuration: $CONFIGURATION"
-           # Decrypt configuration-specific signing files
-           find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
-             echo "decrypting file: ${f%.*}"
-             openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
-             rm -f "$f"
-           done
-           # Decrypt SSH key
-           echo "decrypting noknok ssh key"
-           openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
-           echo "listing decrypted files .."
-           ls -altr
+          set -e    
+          echo "Using configuration: $CONFIGURATION"
+          # Decrypt configuration-specific signing files
+          find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
+            echo "decrypting file: ${f%.*}"
+            openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
+            rm -f "$f"
+          done
+          # Decrypt SSH key
+          echo "decrypting noknok ssh key"
+          openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
+          echo "listing decrypted files .."
+          ls -altr
 
       - name:  Create costco.keychain
         working-directory: ${{ github.workspace }}/Costco/Signing
@@ -125,10 +124,9 @@ jobs:
               security import "./$p" -k "$keychain" -P "$CIPHER" -A
             fi
           done 
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain"   
+          #security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain" || true
           echo "COSTCO_KEYCHAIN=$keychain" >> $GITHUB_ENV
           echo "generated keychain: $COSTCO_KEYCHAIN"
-
 
       - name: Install Noknok SSH deploy key
         working-directory: ${{ github.workspace }}/Costco/Signing
@@ -171,3 +169,22 @@ jobs:
           ssh -T git@github.com || true
           # Test repo access
           git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+
+      - name: Set codesigning IDs
+        env:
+          CIPHER: ${{ secrets.CIPHER }}
+          COSTCO_KEYCHAIN: ${{ env.COSTCO_KEYCHAIN }}
+        run: |
+          set -e
+          security unlock-keychain -p "$CIPHER" "$COSTCO_KEYCHAIN"
+          uuid=$(
+            security find-identity -v -p codesigning | \
+            awk '{$1=""; print $0}' | sort -u | grep -i costco | \
+            awk '{print $1}' | xargs
+          )
+          if [[ ${#uuid} -eq 0 ]]; then
+            echo 'Error: Invalid code signing ID'
+            exit 1
+          fi
+          echo "Codesigning ID: $uuid"
+          echo "CODESIGN_ID=$uuid" >> $GITHUB_ENV
