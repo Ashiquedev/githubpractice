@@ -17,6 +17,7 @@ env:
   ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
   APPSTORE_TEAM_ID: 'MCL67DL73Q'
   XCODE_VERSION: '26.2'
+  SCHEME: 'Costco'
 jobs:
   build:
     name: Build iOS App
@@ -362,3 +363,36 @@ jobs:
                 fi
               fi
             done
+
+      - name: Export xcode archive (IPA)
+        working-directory: ${{ github.workspace }}
+        env:
+          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+          CODESIGN_ID: ${{ env.CODESIGN_ID }}
+          PROVISIONING_PROFILE: ${{ env.PROVISIONING_PROFILE }}
+          EXT_PROVISIONING_PROFILE: ${{ env.EXT_PROVISIONING_PROFILE }}
+          EXT_WIDGET_PROVISIONING_PROFILE: ${{ env.EXT_WIDGET_PROVISIONING_PROFILE }}
+          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
+          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
+          SCHEME: ${{ env.SCHEME }}
+          EXPORT_OPTIONS: ${{ env.EXPORT_OPTIONS }}
+        run: |
+            #!/bin/bash
+            set -e
+    
+            cores=$(sysctl hw.ncpu | awk '{print $NF}')
+            echo "Creating ipa from $ARCHIVE_PATH .."
+            xcodebuild \
+              -exportArchive \
+              -jobs ${cores} \
+              -archivePath $ARCHIVE_PATH.xcarchive \
+              -exportPath $ARCHIVE_PATH \
+              -exportOptionsPlist $EXPORT_OPTIONS \
+              # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
+              APP_PROFILE=$PROVISIONING_PROFILE \
+              EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
+              EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
+              EMBEDDED_CONTENT_CONTAINS_SWIFT=Yes
+
+
