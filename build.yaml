@@ -422,29 +422,18 @@ jobs:
           echo "Release Notes: " >> "$release_notes"
           echo "- $PR_RELEASE_NOTES_INPUT" >> "$release_notes"
           if [[ -n "$PR_MILESTONE" ]]; then
-            echo "Gathering Pull-requests with milestone: $PR_MILESTONE"
-            curl -s --fail -X GET \
-            -H "Authorization: Bearer $GIT_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/issues?state=closed" > issues.json
+            curl -s -H "Authorization: Bearer $GIT_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/issues?state=closed" > issues.json
   
-            # query all related pull-requests
+  
             prs=$(cat issues.json | jq -r --arg m "$PR_MILESTONE" \
-            '.[] | select(.milestone != null and .milestone.title == $m and (.labels[]?.name == "Release Notes")) | .pull_request.url' | grep "api.github.com" || true)
-            # loop through pull-requests
-            count=$(echo "$prs" | wc -l | xargs || echo 0)
-            echo "Found $count related pull-requests"
+              '.[] | select(.milestone.title == $m and (.labels[]?.name == "Release Notes")) | .pull_request.url' | grep "api.github.com" || true)
+
             for url in $prs; do
               pr_id=$(basename "$url")
-              echo "checking PR: $pr_id"
-
-              pr=$(curl -s --fail -H "Authorization: Bearer $GIT_TOKEN" "$url")
-              is_merged=$(echo "$pr" | jq -r '.merged')
-
-              if [[ "$is_merged" == "true" ]]; then
-                body=$(echo "$pr" | jq -r '.body // empty')
-                [ -n "$body" ] && echo "- $body" >> "$release_notes"
-              else
-                echo "Skipping PR $pr_id because it was closed without merging."
+              pr=$(curl -s -H "Authorization: Bearer $GIT_TOKEN" "$url")
+              if [[ "$(echo "$pr" | jq -r '.merged')" == "true" ]]; then
+                echo "- $(echo "$pr" | jq -r '.body // empty')" >> "$release_notes"
               fi
             done
           fi
@@ -465,7 +454,7 @@ jobs:
             -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}.ipa" \;
 
           echo "Staging debug symbols .."
-          find "$GITHUB_WORKSPACE" -type f -name "*dSYM.zip" \
+          find "$GITHUB_WORKSPACE" -type f -name "*dSYM.zip" -not -path "$STAGING_DIR/*" \
             -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}-dSYM.zip" \;
 
           echo "Staging release notes .."
