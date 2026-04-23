@@ -236,3 +236,66 @@ jobs:
             echo "Detected SDK: $_sdk"
             xcodebuild -version
 
+      - name: Set Xcode archive path
+        env:
+          CONFIGURATION: ${{ github.event.inputs.configuration }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          archive_path="$GITHUB_WORKSPACE/${BUILD_NUMBER}-${CONFIGURATION}"      
+          mkdir -p "$archive_path"
+          echo "ARCHIVE_PATH=$archive_path" >> $GITHUB_ENV
+          echo "ARCHIVE_PATH: $archive_path"
+
+      - name: Pod Install
+        if: false 
+        working-directory: ${{ github.workspace }}/Costco
+        run: pod install
+      
+      - name: Install Distributions
+        env:
+          SDK: ${{ env.SDK }}
+        run: |
+          echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+          version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
+          echo "$version"
+          if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+            echo "Distribution SDK is already present"
+          else
+            echo "Required SDK not available, Installing the verson ${_sdk}"
+            cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+            xcodebuild -downloadPlatform iOS -buildVersion $(version)
+            echo "Installed the distributions "
+          fi
+      
+      - name: 'Build ${{ github.event.inputs.configuration }}'
+        env:
+          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+          CODESIGN_ID: ${{ env.CODESIGN_ID }}
+          PROVISIONING_PROFILE: ${{ env.PROVISIONING_PROFILE }}
+          EXT_PROVISIONING_PROFILE: ${{ env.EXT_PROVISIONING_PROFILE }}
+          EXT_WIDGET_PROVISIONING_PROFILE: ${{ env.EXT_WIDGET_PROVISIONING_PROFILE }}
+          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
+          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
+          SCHEME: ${{ env.SCHEME }}
+        run: |
+          set -e    
+          echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app    
+          cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+          echo  "Creating xcode archive: $ARCHIVE_PATH .."
+          xcodebuild clean archive \
+            -jobs $cpu_count \
+            -workspace "${{ github.workspace }}/Costco/Costco.xcworkspace" \
+            -scheme $SCHEME \
+            -configuration ${{ github.event.inputs.configuration }} \
+            -archivePath $ARCHIVE_PATH \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=$CODESIGN_ID \
+            # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
+            APP_PROFILE=$PROVISIONING_PROFILE \
+            EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
+            EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
+            | xcpretty
+
