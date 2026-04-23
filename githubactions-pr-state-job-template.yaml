@@ -1,0 +1,67 @@
+name: Inspect pull-request
+
+on:
+  workflow_call:
+    inputs:
+      variable_prefix:
+        required: true
+        type: string
+        default: 'PR'
+    outputs:
+      ID:
+        description: "The Pull Request ID"
+        value: ${{ jobs.Classify.outputs.ID }}
+      MILESTONE:
+        description: "The Milestone title"
+        value: ${{ jobs.Classify.outputs.MILESTONE }}
+      RELEASE_NOTES:
+        description: "Release Notes"
+        value: ${{ jobs.Classify.outputs.RELEASE_NOTES }}
+
+jobs:
+  Classify:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    outputs:
+      ID: ${{ steps.set_vars.outputs.ID }}
+      MILESTONE: ${{ steps.set_vars.outputs.MILESTONE }}
+      RELEASE_NOTES: ${{ steps.set_vars.outputs.RELEASE_NOTES }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inspect PR State
+        id: set_vars
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo 'Searching for pull-request ID in commit message...'
+          
+          # Extracts the PR number from the latest commit message (e.g., "Merge pull request #123")
+          pr=$(git log --oneline | head -n1 | grep -Eo '#[[:digit:]]*' | tr -d '#' || true)
+
+          if [[ -z "$pr" ]]; then
+            echo "Skipping build. Not a PR merge event."
+            # Use GitHub CLI to cancel the current run immediately
+            gh run cancel ${{ github.run_id }}
+            echo "Waiting for cancellation..."
+            sleep 60
+            exit 0
+          fi
+
+          echo "Fetching pull-request data for PR #${pr}..."
+          
+          pr_json=$(gh api repos/${{ github.repository }}/pulls/${pr})
+          
+          # Extract Milestone
+          milestone=$(echo "$pr_json" | jq -r '.milestone.title // empty')
+          
+          echo "PR state: $(echo "$pr_json" | jq -r '.state')"
+          
+          echo "ID=${pr}" >> $GITHUB_OUTPUT
+          echo "MILESTONE=${milestone}" >> $GITHUB_OUTPUT
+          echo "RELEASE_NOTES=---" >> $GITHUB_OUTPUT

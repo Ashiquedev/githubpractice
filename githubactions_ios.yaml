@@ -1,0 +1,120 @@
+name: costco-ios
+
+
+on:
+  push:
+    branches:
+      - develop
+      - 'releases/release-*'
+      - 'hotfix-*'
+
+  pull_request:
+    branches:
+      - develop
+      - 'releases/release-*'
+      - 'hotfix-*'
+
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build Configuration'
+        required: true
+        default: 'Enterprise-QA'
+        type: choice
+        options:
+          - Enterprise-QA
+          - Release
+
+      release_notes:
+        description: 'Release Notes'
+        required: false
+        default: 'Release Notes'
+        type: string
+
+      force_upload_simulator_build:
+        description: 'Force simulator build upload to artifacts (Debug)'
+        required: false
+        default: false
+        type: boolean
+
+      force_upload_saucelabs_build:
+        description: 'Force device build upload to SauceLabs (Enterprise-QA)'
+        required: false
+        default: false
+        type: boolean
+
+
+env:
+  WORKSPACE: ${{ github.workspace }}
+  GIT_API_URL: 'https://github.com/nxt-costco-com/costco-ios'
+  SAUCELABS_API: 'https://api.us-west-1.saucelabs.com/v1/storage/upload'
+  SAUCELABS_URL: 'http://saucelabs.com/rest/v1/storage/ebusinessautomation'
+  SAUCELABS_REALDEVICE_URL: 'https://app.testobject.com:443/api/storage/upload'
+  SAUCELABS_PACKAGE_ALIAS: 'CostcoDebug.zip'
+  SAUCELABS_IPA_ALIAS: 'CostcoRelease.ipa'
+  VERACODE_URL: 'https://tools.veracode.com/integrations/xcode/com.veracode.mobileapplicationpackager.dmg'
+  ENTERPRISE_TEAM_ID: TGWXEY4D6F
+  APPSTORE_TEAM_ID: MCL67DL73Q
+  APPCENTER_ENDPOINT: 'appcenter-service-connection'
+  BUILD_NUMBER: ${{ github.run_number }}
+  MACOS: 'macOS-15'
+  UBUNTU: 'ubuntu-latest'
+  SCHEME: Costco
+  XCODE_VERSION: '26.2'
+  OS_VERSION: '26.2'
+
+jobs:
+  # 1. Classify Job (Calling a Job Template)
+  # ADO: .azure-pipeline-templates/pr-state-job-template.yml
+  Classify:
+    uses: ./.github/workflows/pr-state-job-template.yml
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request'
+    with:
+      variable_name: 'pull_request'
+
+  # 2. Debug Job (Enterprise-QA)
+  Debug:
+    name: Build (Enterprise-QA)
+    needs: Classify
+    # ADO: condition: ne(dependencies.Classify.outputs['pull_request.ID'], '')
+    if: ${{ needs.Classify.outputs.pull_request_id != '' }}
+    runs-on: macos-latest # Maps to $(macos)
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ADO: .azure-pipeline-templates/build-task-template.yml
+      # Task templates are converted to Composite Actions in GitHub
+      - name: Execute Build (Enterprise-QA)
+        uses: ./.github/actions/build-task-template
+        with:
+          configuration: 'Enterprise-QA'
+          PR_ID: ${{ needs.Classify.outputs.pull_request_id }}
+          PR_MILESTONE: ${{ needs.Classify.outputs.pull_request_milestone }}
+          PR_RELEASE_NOTES: ${{ needs.Classify.outputs.pull_request_release_notes }}
+
+  # 3. Release Job (Release)
+  Release:
+    name: Build (Release)
+    needs: Classify
+    # ADO: PR is active AND branch contains 'release' or 'hotfix'
+    if: |
+      needs.Classify.outputs.pull_request_id != '' && 
+      (contains(github.ref, 'release') || contains(github.ref, 'hotfix'))
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Execute Build (Release)
+        uses: ./.github/actions/build-task-template
+        with:
+          configuration: 'Release'
+          PR_ID: ${{ needs.Classify.outputs.pull_request_id }}
+          PR_MILESTONE: ${{ needs.Classify.outputs.pull_request_milestone }}
+          PR_RELEASE_NOTES: ${{ needs.Classify.outputs.pull_request_release_notes }}

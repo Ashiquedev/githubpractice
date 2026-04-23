@@ -1,0 +1,50 @@
+# common job for checking a pull-request's state
+parameters:
+  name: Classify
+  variable: PR
+
+jobs:
+  - job: ${{ parameters.name }}
+    displayName: Inspect pull-request
+    condition: in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI')
+
+    pool:
+      vmImage: $(ubuntu)
+
+    steps:
+      - checkout: self
+        fetchDepth: 1 
+        fetchTags: false 
+      - task: Bash@3
+        displayName: "PR: $(System.PullRequest.PullRequestNumber)"
+        name: ${{ parameters.variable }}
+        inputs:
+          targetType: 'inline'
+          script: |
+            #!/bin/bash
+            set -e
+            echo 'searching for pull-request ID ..'
+            pr=$(git log --oneline | head -n1 | grep -Eo '#[[:digit:]]*' | tr -d '#')
+
+            if [[ -z "$pr" ]]; then
+              echo 'Skipping build.  Not a PR merge event.'
+              api="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/build/builds/$(Build.BuildId)?api-version=5.1"
+              curl -X DELETE -ks -H "status: Canceling" -H "Authorization: Bearer $(System.AccessToken)" "${api}"
+              echo 'waiting on build cancellation ..'
+              sleep 60
+              exit 0
+            fi
+
+            echo "fetching pull-request data for PR #${pr} .."
+            curl -s --fail -H "Authorization: token $(GIT_TOKEN)" \
+              $(GIT_API_URL)/pulls/${pr} > pr.json
+
+            # set variables needed to classify the triggered build
+            milestone=$(cat pr.json | jq -r 'select(.milestone.title != null) | .milestone.title')
+
+            stub='---'
+            echo "PR state: $(cat pr.json | jq -r '.state')"
+            echo "##vso[task.setvariable variable=ID;isOutput=true]${pr}"
+            echo "##vso[task.setvariable variable=MILESTONE;isOutput=true]${milestone}"
+            echo "##vso[task.setvariable variable=RELEASE_NOTES;isOutput=true]${stub}"
+            # echo "##vso[task.setvariable variable=RELEASE_NOTES;isOutput=true]$(cat pr.json | jq -r '.body')"
