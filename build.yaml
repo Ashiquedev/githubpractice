@@ -11,7 +11,10 @@ on:
         options:
           - Enterprise-QA
           - Release
-
+      release_notes:
+        description: 'Release Notes'
+        required: false
+        default: 'Release Notes'
 env:
   BUILD_NUMBER: ${{ github.run_number }}
   ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
@@ -396,3 +399,144 @@ jobs:
               EMBEDDED_CONTENT_CONTAINS_SWIFT=Yes
 
 
+
+
+      - name: Compile PR Release Notes
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
+          PR_NOTES_INPUT: ${{ github.event.inputs.release_notes || 'Release Notes' }}
+          PR_MILESTONE: ${{ github.event.pull_request.milestone.title || '' }}
+        run: |
+           set -e
+           echo 'collecting build summary for PR'
+           release_notes="${{ github.workspace }}/${{ github.run_number }}-${CONFIG}-release-notes.md"
+           echo "_____________" >> $release_notes
+           echo "Build Summary: " >> $release_notes
+           if [[ "$(Build.Reason)" == *PullRequest* ]]; then
+             echo "- PullRequest: $(system.pullRequest.pullRequestNumber)" >> $release_notes
+           fi
+           echo "- Build Configuration: ${{ parameters.configuration }}" >> $release_notes
+           echo "- Build: $(build_number)" >> $release_notes
+           echo "- Build url: $(Build.BuildUri)" >> $release_notes
+           echo "- GIT commit: $(Build.SourceVersion)" >> $release_notes
+           echo "- GIT url: $(Build.Repository.Uri)" >> $release_notes
+           echo "- GIT branch: $(Build.SourceBranch)" >> $release_notes
+           echo "_____________" >> $release_notes
+   
+           echo "Release Notes: " >> $release_notes
+           echo "- $(PR_RELEASE_NOTES)" >> $release_notes
+           if [[ -n "$(PR_MILESTONE)" ]]; then
+             # grab all "closed" issues
+             curl -s --fail -X GET \
+               -H "Authorization: token $(GIT_TOKEN)" \
+               $(GIT_API_URL)/issues?state=closed \
+               | python -m json.tool > issues.json
+   
+             # query all related pull-requests
+             echo Gathering Pull-requests with milestone: $(PR_MILESTONE)
+             prs=$(cat issues.json \
+               | jq -r --arg m "$(PR_MILESTONE)" \
+               '.[] | select(.milestone.title == $m and (.labels[0].name == "Release Notes")) | .pull_request.url')
+   
+             # loop through pull-requests
+             echo Found $(echo "$prs" | wc -l) related pull-requests
+             for url in $prs; do
+               echo "checking PR: $(basename $url)"
+               pr=$(curl -s --fail -X GET -H "Authorization: token $(GIT_TOKEN)" "$url")
+   
+               # only include release notes from "merged" PR's ?
+               # if [[ "$(echo $pr | jq -r '.merged')" == *true* ]]; then
+   
+               # @TBD -- changing the comment to force a CI build
+               if [ 1 ]; then
+                 echo "- $(echo $pr | jq -r '.body')" | tee -a $release_notes
+               fi
+             done
+           fi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      - name: Compile PR Release Notes
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
+          PR_NOTES_INPUT: ${{ github.event.inputs.release_notes || 'Release Notes' }}
+          PR_MILESTONE: ${{ github.event.pull_request.milestone.title || '' }}
+        run: |
+          set -e
+
+          echo "Collecting build summary for PR"
+
+          release_notes="${{ github.workspace }}/${{ github.run_number }}-${CONFIG}-release-notes.md"
+
+          echo "_____________" >> "$release_notes"
+          echo "Build Summary: " >> "$release_notes"
+
+          # PR info (only if PR event)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "- PullRequest: ${{ github.event.pull_request.number }}" >> "$release_notes"
+          fi
+
+          echo "- Build Configuration: $CONFIG" >> "$release_notes"
+          echo "- Build: ${{ github.run_number }}" >> "$release_notes"
+          echo "- Build url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$release_notes"
+          echo "- GIT commit: ${{ github.sha }}" >> "$release_notes"
+          echo "- GIT url: ${{ github.server_url }}/${{ github.repository }}" >> "$release_notes"
+          echo "- GIT branch: ${{ github.ref_name }}" >> "$release_notes"
+          echo "_____________" >> "$release_notes"
+
+          echo "Release Notes:" >> "$release_notes"
+          echo "- ${PR_RELEASE_NOTES}" >> "$release_notes"
+
+          if [[ -n "$PR_MILESTONE" ]]; then
+            echo "Fetching issues for milestone: $PR_MILESTONE"
+
+            curl -s \
+              -H "Authorization: Bearer $GIT_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/issues?state=closed" \
+              > issues.json
+
+            prs=$(jq -r --arg m "$PR_MILESTONE" \
+              '.[] | select(.milestone.title == $m and (.labels[0].name == "Release Notes")) | .pull_request.url' issues.json)
+
+            echo "Found $(echo "$prs" | wc -l) related pull-requests"
+
+            for url in $prs; do
+              echo "Checking PR: $(basename $url)"
+
+              pr=$(curl -s \
+                -H "Authorization: Bearer $GIT_TOKEN" \
+                "$url")
+
+              echo "- $(echo "$pr" | jq -r '.body')" | tee -a "$release_notes"
+            done
+          fi
+
+          echo "Release notes generated at: $release_notes"
