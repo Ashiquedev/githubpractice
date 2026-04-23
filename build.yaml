@@ -479,3 +479,8 @@ jobs:
           fi
           echo "Sanity check - staged artifacts:"
           ls -alt "$STAGING_DIR" | grep "$CONFIG" || true
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-${{ github.run_number }}
+          path: ${{ github.workspace }}/artifacts/
