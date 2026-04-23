@@ -329,6 +329,7 @@ jobs:
             fi
 
       - name: Remove unsupported architectures
+        working-directory: ${{ github.workspace }}
         env:
           ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
         run: |
