@@ -436,10 +436,10 @@ jobs:
             for url in $prs; do
               pr_id=$(basename "$url")
               echo "checking PR: $pr_id"
-      
+
               pr=$(curl -s --fail -H "Authorization: Bearer $GIT_TOKEN" "$url")
               is_merged=$(echo "$pr" | jq -r '.merged')
-      
+
               if [[ "$is_merged" == "true" ]]; then
                 body=$(echo "$pr" | jq -r '.body // empty')
                 [ -n "$body" ] && echo "- $body" >> "$release_notes"
@@ -449,28 +449,33 @@ jobs:
             done
           fi
           echo "RELEASE_NOTES_FILE=$release_notes" >> $GITHUB_ENV
+      - name: Stage artifacts
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          CONFIG: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
+          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+        run: |
+          set -e
 
+          STAGING_DIR="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$STAGING_DIR"
 
+          echo "Staging IPA .."
+          find "$GITHUB_WORKSPACE" -type f -name "*.ipa" -not -path "$STAGING_DIR/*" \
+            -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}.ipa" \;
 
+          echo "Staging debug symbols .."
+          find "$GITHUB_WORKSPACE" -type f -name "*dSYM.zip" \
+            -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}-dSYM.zip" \;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+          echo "Staging release notes .."
+          cat "$GITHUB_WORKSPACE"/*"${CONFIG}"*.md || true
+          cp "$GITHUB_WORKSPACE"/*"${CONFIG}"*.md "$STAGING_DIR/" || echo "No release notes found"
+          echo "Staging xcarchive .."
+          if [ -d "${ARCHIVE_PATH}.xcarchive" ]; then
+            zip -r "$STAGING_DIR/$(basename "$ARCHIVE_PATH").xcarchive.zip" "${ARCHIVE_PATH}.xcarchive"
+          else
+            echo "Warning: xcarchive not found at ${ARCHIVE_PATH}.xcarchive"
+          fi
+          echo "Sanity check - staged artifacts:"
+          ls -alt "$STAGING_DIR" | grep "$CONFIG" || true
