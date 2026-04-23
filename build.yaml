@@ -298,4 +298,33 @@ jobs:
             EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
             EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
             | xcpretty
+      - name: Collect App's dSYM's
+        env:
+          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+        run: |
+            set -e
+            echo 'archiving debug symbols'
+            archive_dir="${ARCHIVE_PATH}.xcarchive"
+            debug_symbols=$(find -L "$archive_dir" -name "*app.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
+            appex_notification_debug_symbols=$(find -L "$archive_dir" -name "*Notification*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
+            appex_widget_debug_symbols=$(find -L "$archive_dir" -name "*Widget*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
+            dirname="$GITHUB_WORKSPACE/dSYM"
+            if [ ! -d "$dirname" ]
+            then
+                mkdir -p $dirname
+                cp -r "${debug_symbols}" "${dirname}"
+                cp -r "${appex_notification_debug_symbols}" "${dirname}"
+                cp -r "${appex_widget_debug_symbols}" "${dirname}"
+            else
+                echo "File exists"
+            fi
+            echo "${debug_symbols}"
+            echo "${appex_notification_debug_symbols}"
+            echo "${appex_widget_debug_symbols}"
+
+            if [[ -n "${debug_symbols}" ]]; then
+              zip -r $ARCHIVE_PATH-dSYM.zip "${dirname}"
+            else
+              echo 'WARNING: missing debug symbols'
+            fi
 
