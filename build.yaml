@@ -130,7 +130,7 @@ jobs:
           done 
           #security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain" || true
           echo "COSTCO_KEYCHAIN=$keychain" >> $GITHUB_ENV
-          echo "generated keychain: $COSTCO_KEYCHAIN"
+          echo "generated keychain: $keychain"
 
       - name: Install Noknok SSH deploy key
         working-directory: ${{ github.workspace }}/Costco/Signing
@@ -266,9 +266,9 @@ jobs:
           if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
             echo "Distribution SDK is already present"
           else
-            echo "Required SDK not available, Installing the verson ${_sdk}"
+            echo "Required SDK not available, Installing the verson $SDK"
             cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
-            xcodebuild -downloadPlatform iOS -buildVersion $(version)
+            xcodebuild -downloadPlatform iOS -buildVersion "$version"
             echo "Installed the distributions "
           fi
       
@@ -316,9 +316,9 @@ jobs:
             if [ ! -d "$dirname" ]
             then
                 mkdir -p $dirname
-                cp -r "${debug_symbols}" "${dirname}"
-                cp -r "${appex_notification_debug_symbols}" "${dirname}"
-                cp -r "${appex_widget_debug_symbols}" "${dirname}"
+                [ -n "$debug_symbols" ] && cp -r "$debug_symbols" "$dirname"
+                [ -n "$appex_notification_debug_symbols" ] && cp -r "$appex_notification_debug_symbols" "$dirname"
+                [ -n "$appex_widget_debug_symbols" ] && cp -r "$appex_widget_debug_symbols" "$dirname"
             else
                 echo "File exists"
             fi
