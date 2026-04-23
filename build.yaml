@@ -328,3 +328,36 @@ jobs:
               echo 'WARNING: missing debug symbols'
             fi
 
+      - name: Remove unsupported architectures
+        env:
+          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+        run: |
+            architectures=(arm64)
+            echo 'searching for frameworks'
+            find -L ${{ env.ARCHIVE_PATH }}.xcarchive -name "*.framework" -type d | while read -r framework; do
+              echo "Framework: $framework"
+              binaryname=$(defaults read "$framework/Info.plist" CFBundleExecutable 2>/dev/null)
+              
+              if [[ -n $binaryname ]]; then
+                # check if the binary is a FAT file
+                binarypath="${framework}/${binaryname}"
+                lipo -info "$binarypath" | grep -iv 'non-fat' 2>/dev/null
+              
+                if [[ $? -eq 0 ]]; then
+                  extracted=()
+                  for arch in "${architectures[@]}"; do
+                    echo "extracting ${arch} from ${binaryname} .."
+                    lipo -extract "${arch}" "${binarypath}" -o "${binarypath}-${arch}"
+                    extracted+=("${binarypath}-${arch}")
+                  done
+
+                  if [ ${#extracted[@]} -gt 0 ]; then
+                    echo "merging extracted architectures: ${architectures[@]} .."
+                    lipo -o "${binarypath}-merged" -create "${extracted[@]}"
+                    rm -rf "${extracted[@]}"
+                    mv "${binarypath}-merged" "${binarypath}"
+                    echo "replaced original binary with arm64-only version"
+                  fi
+                fi
+              fi
+            done
