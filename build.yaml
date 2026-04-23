@@ -401,7 +401,7 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
-          PR_NOTES_INPUT: ${{ github.event.inputs.release_notes || 'Release Notes' }}
+          PR_RELEASE_NOTES_INPUT: ${{ github.event.inputs.release_notes || 'Release Notes' }}
           PR_MILESTONE: ${{ github.event.pull_request.milestone.title || '' }}
         run: |
           set -e
@@ -428,23 +428,27 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/issues?state=closed" > issues.json
   
             # query all related pull-requests
-            echo Gathering Pull-requests with milestone: $(PR_MILESTONE)
             prs=$(cat issues.json | jq -r --arg m "$PR_MILESTONE" \
-            '.[] | select(.milestone.title == $m and (.labels[0].name == "Release Notes")) | .pull_request.url' | grep "api.github.com" || true)
+            '.[] | select(.milestone != null and .milestone.title == $m and (.labels[]?.name == "Release Notes")) | .pull_request.url' | grep "api.github.com" || true)
             # loop through pull-requests
-            echo "Found $(echo "$prs" | wc -l) related pull-requests"
+            count=$(echo "$prs" | wc -l | xargs || echo 0)
+            echo "Found $count related pull-requests"
             for url in $prs; do
-              echo "checking PR: $(basename $url)"
-              pr=$(curl -s --fail -X GET -H "Authorization: Bearer $GIT_TOKEN" "$url")
-
-              # matches your 'if [ 1 ];' block to always include body
-              if [ 1 ]; then
-                echo "- $(echo "$pr" | jq -r '.body')" | tee -a "$release_notes"
+              pr_id=$(basename "$url")
+              echo "checking PR: $pr_id"
+      
+              pr=$(curl -s --fail -H "Authorization: Bearer $GIT_TOKEN" "$url")
+              is_merged=$(echo "$pr" | jq -r '.merged')
+      
+              if [[ "$is_merged" == "true" ]]; then
+                body=$(echo "$pr" | jq -r '.body // empty')
+                [ -n "$body" ] && echo "- $body" >> "$release_notes"
+              else
+                echo "Skipping PR $pr_id because it was closed without merging."
               fi
             done
           fi
           echo "RELEASE_NOTES_FILE=$release_notes" >> $GITHUB_ENV
-
 
 
 
