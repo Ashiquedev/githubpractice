@@ -170,7 +170,7 @@ jobs:
       - name: Set Codesigning IDs
         env:
           CIPHER: ${{ secrets.CIPHER }}
-          COSTCO_KEYCHAIN: ${{ env.COSTCO_KEYCHAIN }}
+          
         run: |
           set -e
           security unlock-keychain -p "$CIPHER" "$COSTCO_KEYCHAIN"
