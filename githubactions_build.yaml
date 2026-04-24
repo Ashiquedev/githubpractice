@@ -35,6 +35,10 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           clean: true
+      
+      - name: Install xcpretty
+        run: gem install xcpretty --no-document
+
       - name: Version increment
         working-directory: ${{ github.workspace }}/Costco
         run: |
@@ -55,9 +59,7 @@ jobs:
           export_options="${GITHUB_WORKSPACE}/exportOptions-${CONFIGURATION}.plist"
           bundle_id='com.costco.costco'
           group_identifier='group.com.costco.costco'
-          
           echo "generating: ${export_options}"
-          
           case ${CONFIGURATION} in
             Enterprise-QA)
               PlistBuddy -c "add method string enterprise" "$export_options"
@@ -95,43 +97,40 @@ jobs:
         run: |
           set -e    
           echo "Using configuration: $CONFIGURATION"
-          # Decrypt configuration-specific signing files
           find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
             echo "decrypting file: ${f%.*}"
             openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
             rm -f "$f"
           done
-          # Decrypt SSH key
           echo "decrypting noknok ssh key"
           openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
           echo "listing decrypted files .."
           ls -altr
 
-      - name:  Create costco.keychain
+      - name: Create costco.keychain
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
           CIPHER: ${{ secrets.CIPHER }}
         run: |
           set -e
-          # create a keychain and set it as the default
           keychain=$(pwd)/costco.keychain
           security create-keychain -p "$CIPHER" "$keychain"
-          security list-keychains -s "$keychain"    
+          security list-keychains -s "$keychain"
           # unlock the keychain for 30 minutes
           security unlock-keychain -p "$CIPHER" "$keychain"
           security set-keychain-settings -lut 1800 "$keychain"
-          security default-keychain -s "$keychain"    
-          # Import all .p12 certificates
+          security default-keychain -s "$keychain"
           for p in *.p12; do
             if [ -f "$p" ]; then
               echo "Importing: $p"
               security import "./$p" -k "$keychain" -P "$CIPHER" -A
             fi
-          done 
+          done
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain" || true
           echo "COSTCO_KEYCHAIN=$keychain" >> $GITHUB_ENV
           echo "generated keychain: $keychain"
 
-      - name: Install Noknok SSH deploy key
+      - name: Install NokNok SSH Deploy Key
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
           PASS: ${{ secrets.NOK_PWD }}
@@ -142,7 +141,6 @@ jobs:
           KEY_PATH="$(pwd)/noknok_deploy_key"
           mkdir -p "$SSH_DIR"
           chmod 700 "$SSH_DIR"
-          # Create SSH config if not exists
           if [ ! -f "$SSH_CONFIG" ] || ! grep -q "UseKeychain" "$SSH_CONFIG"; then
             echo "Adding macOS Keychain rules to SSH config..."
             cat > "$SSH_CONFIG" << EOF
@@ -158,22 +156,18 @@ jobs:
             chmod 600 "$SSH_CONFIG"
           fi
           chmod 600 "$KEY_PATH"
-          # Start SSH agent
           eval "$(ssh-agent -s)"
           echo "Unlocking and adding the key to the agent..."
           echo "$PASS" | ssh-add "$KEY_PATH"
           echo "Currently loaded keys:"
           ssh-add -l
-          # Export variables for next steps
           echo "GIT_SSH_COMMAND=ssh -i $KEY_PATH -o IdentitiesOnly=yes" >> $GITHUB_ENV
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
-          # Test SSH
           ssh -T git@github.com || true
-          # Test repo access
           git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
 
-      - name: Set codesigning IDs
+      - name: Set Codesigning IDs
         env:
           CIPHER: ${{ secrets.CIPHER }}
           COSTCO_KEYCHAIN: ${{ env.COSTCO_KEYCHAIN }}
@@ -192,8 +186,7 @@ jobs:
           echo "Codesigning ID: $uuid"
           echo "CODESIGN_ID=$uuid" >> $GITHUB_ENV
 
-        # define provisioning profile variables
-      - name: Install provisioning profiles
+      - name: Install Provisioning Profiles
         working-directory: ${{ github.workspace }}/Costco/Signing
         run: |
           set -e
@@ -224,54 +217,54 @@ jobs:
           echo "PROVISIONING_PROFILE=$uuid" >> $GITHUB_ENV
           echo "EXT_PROVISIONING_PROFILE=$ext_uuid" >> $GITHUB_ENV
           echo "EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid" >> $GITHUB_ENV
-
           echo "Exported:"
           echo "  PROVISIONING_PROFILE=$uuid"
           echo "  EXT_PROVISIONING_PROFILE=$ext_uuid"
           echo "  EXT_WIDGET_PROVISIONING_PROFILE=$widget_uuid"
+
       - name: Set SDK
         run: |
-            set -e
-            echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
-            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
-            _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
-            echo "SDK=${_sdk}" >> $GITHUB_ENV
-            echo "Detected SDK: $_sdk"
-            xcodebuild -version
+          set -e
+          echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+          _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
+          echo "SDK=${_sdk}" >> $GITHUB_ENV
+          echo "Detected SDK: $_sdk"
+          xcodebuild -version
 
-      - name: Set Xcode archive path
+      - name: Set Xcode Archive Path
         env:
           CONFIGURATION: ${{ github.event.inputs.configuration }}
-          BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          archive_path="$GITHUB_WORKSPACE/${BUILD_NUMBER}-${CONFIGURATION}"      
-          mkdir -p "$archive_path"
+          archive_path="${GITHUB_WORKSPACE}/${{ github.run_number }}-${CONFIGURATION}"
           echo "ARCHIVE_PATH=$archive_path" >> $GITHUB_ENV
           echo "ARCHIVE_PATH: $archive_path"
 
       - name: Pod Install
-        if: false 
+        if: false
         working-directory: ${{ github.workspace }}/Costco
         run: pod install
-      
+
+      - name: List Runtimes
+        run: xcrun simctl list runtimes
+
       - name: Install Distributions
         env:
           SDK: ${{ env.SDK }}
         run: |
-          echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
+          echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
           sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
           version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
-          echo "$version"
-          if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
+          echo "Checking for iOS runtime version: $version"
+          if xcrun simctl list runtimes | grep -Eq "\b${version}\b"; then
             echo "Distribution SDK is already present"
           else
             echo "Required SDK not available, Installing the verson $SDK"
             cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
             xcodebuild -downloadPlatform iOS -buildVersion "$version"
-            echo "Installed the distributions "
+            echo "Installed the distributions"
           fi
-      
-      - name: 'Build ${{ github.event.inputs.configuration }}'
+      - name: Build ${{ github.event.inputs.configuration }}
         env:
           ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
           CODESIGN_ID: ${{ env.CODESIGN_ID }}
@@ -281,92 +274,90 @@ jobs:
           GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
           SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
           SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
-          SCHEME: ${{ env.SCHEME }}
         run: |
-          set -e    
-          echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
-          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app    
+          set -eo pipefail
+          echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+
           cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
-          echo  "Creating xcode archive: $ARCHIVE_PATH .."
+          echo "Creating xcode archive: $ARCHIVE_PATH .."
           xcodebuild clean archive \
-            -jobs $cpu_count \
+            -jobs "$cpu_count" \
             -workspace "${{ github.workspace }}/Costco/Costco.xcworkspace" \
-            -scheme $SCHEME \
-            -configuration ${{ github.event.inputs.configuration }} \
-            -archivePath $ARCHIVE_PATH \
+            -scheme "$SCHEME" \
+            -configuration "${{ github.event.inputs.configuration }}" \
+            -archivePath "$ARCHIVE_PATH" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY=$CODESIGN_ID \
-
-            APP_PROFILE=$PROVISIONING_PROFILE \
-            EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
-            EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
+            CODE_SIGN_IDENTITY="$CODESIGN_ID" \
+            APP_PROFILE="$PROVISIONING_PROFILE" \
+            NOTIFICATION_EXTENSION_PROFILE="$EXT_PROVISIONING_PROFILE" \
+            WIDGET_PROFILE="$EXT_WIDGET_PROVISIONING_PROFILE" \
             | xcpretty
-      - name: Collect App's dSYM's
-        env:
-          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
+
+      - name: Collect App dSYMs
         run: |
-            set -e
-            echo 'archiving debug symbols'
-            archive_dir="${ARCHIVE_PATH}.xcarchive"
-            debug_symbols=$(find -L "$archive_dir" -name "*app.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
-            appex_notification_debug_symbols=$(find -L "$archive_dir" -name "*Notification*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
-            appex_widget_debug_symbols=$(find -L "$archive_dir" -name "*Widget*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
-            dirname="$GITHUB_WORKSPACE/dSYM"
-            if [ ! -d "$dirname" ]
-            then
-                mkdir -p $dirname
-                [ -n "$debug_symbols" ] && cp -r "$debug_symbols" "$dirname"
-                [ -n "$appex_notification_debug_symbols" ] && cp -r "$appex_notification_debug_symbols" "$dirname"
-                [ -n "$appex_widget_debug_symbols" ] && cp -r "$appex_widget_debug_symbols" "$dirname"
-            else
-                echo "File exists"
-            fi
-            echo "${debug_symbols}"
-            echo "${appex_notification_debug_symbols}"
-            echo "${appex_widget_debug_symbols}"
+          set -e
+          echo 'archiving debug symbols'
+          archive_dir="${ARCHIVE_PATH}.xcarchive"
+          debug_symbols=$(find -L "$archive_dir" -name "*app.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
+          appex_notification_debug_symbols=$(find -L "$archive_dir" -name "*Notification*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
+          appex_widget_debug_symbols=$(find -L "$archive_dir" -name "*Widget*appex.dSYM" -type d | grep -i "\.app" | head -n 1 || true)
 
-            if [[ -n "${debug_symbols}" ]]; then
-              zip -r $ARCHIVE_PATH-dSYM.zip "${dirname}"
-            else
-              echo 'WARNING: missing debug symbols'
-            fi
+          dirname="$GITHUB_WORKSPACE/dSYM"
+          if [ ! -d "$dirname" ]; then
+            mkdir -p "$dirname"
+            [ -n "$debug_symbols" ] && cp -r "$debug_symbols" "$dirname"
+            [ -n "$appex_notification_debug_symbols" ] && cp -r "$appex_notification_debug_symbols" "$dirname"
+            [ -n "$appex_widget_debug_symbols" ] && cp -r "$appex_widget_debug_symbols" "$dirname"
+          else
+            echo "dSYM directory already exists"
+          fi
 
-      - name: Remove unsupported architectures
+          echo "$debug_symbols"
+          echo "$appex_notification_debug_symbols"
+          echo "$appex_widget_debug_symbols"
+
+          if [[ -n "$debug_symbols" ]]; then
+            zip -r "${ARCHIVE_PATH}-dSYM.zip" "$dirname"
+          else
+            echo 'WARNING: missing debug symbols'
+          fi
+
+      - name: Remove Unsupported Architectures
         working-directory: ${{ github.workspace }}
         env:
           ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
         run: |
-            architectures=(arm64)
-            echo 'searching for frameworks'
-            find -L ${{ env.ARCHIVE_PATH }}.xcarchive -name "*.framework" -type d | while read -r framework; do
-              echo "Framework: $framework"
-              binaryname=$(defaults read "$framework/Info.plist" CFBundleExecutable 2>/dev/null)
-              
-              if [[ -n $binaryname ]]; then
-                # check if the binary is a FAT file
-                binarypath="${framework}/${binaryname}"
-                lipo -info "$binarypath" | grep -iv 'non-fat' 2>/dev/null
-              
-                if [[ $? -eq 0 ]]; then
-                  extracted=()
-                  for arch in "${architectures[@]}"; do
-                    echo "extracting ${arch} from ${binaryname} .."
-                    lipo -extract "${arch}" "${binarypath}" -o "${binarypath}-${arch}"
-                    extracted+=("${binarypath}-${arch}")
-                  done
+          architectures=(arm64)
+          echo 'searching for frameworks'
+          find -L "${ARCHIVE_PATH}.xcarchive" -name "*.framework" -type d | while read -r framework; do
+            echo "Framework: $framework"
+            binaryname=$(defaults read "$framework/Info.plist" CFBundleExecutable 2>/dev/null)
 
-                  if [ ${#extracted[@]} -gt 0 ]; then
-                    echo "merging extracted architectures: ${architectures[@]} .."
-                    lipo -o "${binarypath}-merged" -create "${extracted[@]}"
-                    rm -rf "${extracted[@]}"
-                    mv "${binarypath}-merged" "${binarypath}"
-                    echo "replaced original binary with arm64-only version"
-                  fi
+            if [[ -n $binaryname ]]; then
+              binarypath="${framework}/${binaryname}"
+              lipo -info "$binarypath" | grep -iv 'non-fat' 2>/dev/null
+
+              if [[ $? -eq 0 ]]; then
+                extracted=()
+                for arch in "${architectures[@]}"; do
+                  echo "extracting ${arch} from ${binaryname} .."
+                  lipo -extract "${arch}" "${binarypath}" -o "${binarypath}-${arch}"
+                  extracted+=("${binarypath}-${arch}")
+                done
+
+                if [ ${#extracted[@]} -gt 0 ]; then
+                  echo "merging extracted architectures: ${architectures[*]} .."
+                  lipo -o "${binarypath}-merged" -create "${extracted[@]}"
+                  rm -rf "${extracted[@]}"
+                  mv "${binarypath}-merged" "${binarypath}"
+                  echo "replaced original binary with arm64-only version"
                 fi
               fi
-            done
+            fi
+          done
 
-      - name: Export xcode archive (IPA)
+      - name: Export Xcode Archive (IPA)
         working-directory: ${{ github.workspace }}
         env:
           ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
@@ -377,25 +368,20 @@ jobs:
           GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
           SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
           SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
-          SCHEME: ${{ env.SCHEME }}
-          EXPORT_OPTIONS: ${{ env.EXPORT_OPTIONS }}
         run: |
-            #!/bin/bash
-            set -e
-    
-            cores=$(sysctl hw.ncpu | awk '{print $NF}')
-            echo "Creating ipa from $ARCHIVE_PATH .."
-            xcodebuild \
-              -exportArchive \
-              -jobs ${cores} \
-              -archivePath $ARCHIVE_PATH.xcarchive \
-              -exportPath $ARCHIVE_PATH \
-              -exportOptionsPlist $EXPORT_OPTIONS \
-              # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
-              APP_PROFILE=$PROVISIONING_PROFILE \
-              EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
-              EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
-              EMBEDDED_CONTENT_CONTAINS_SWIFT=Yes
+          set -eo pipefail
+          cores=$(sysctl hw.ncpu | awk '{print $NF}')
+          echo "Creating IPA from $ARCHIVE_PATH .."
+          xcodebuild \
+            -exportArchive \
+            -jobs "$cores" \
+            -archivePath "${ARCHIVE_PATH}.xcarchive" \
+            -exportPath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            APP_PROFILE="$PROVISIONING_PROFILE" \
+            NOTIFICATION_EXTENSION_PROFILE="$EXT_PROVISIONING_PROFILE" \
+            WIDGET_PROFILE="$EXT_WIDGET_PROVISIONING_PROFILE" \
+            EMBEDDED_CONTENT_CONTAINS_SWIFT=Yes
       - name: Compile PR Release Notes
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -405,11 +391,12 @@ jobs:
         run: |
           set -e
           echo 'collecting build summary for PR'
-          release_notes="${{ github.workspace }}/${{ github.run_number }}-${CONFIG}-release-notes.md"
+          release_notes="${GITHUB_WORKSPACE}/${{ github.run_number }}-${CONFIG}-release-notes.md"
+
           echo "_____________" >> "$release_notes"
           echo "Build Summary: " >> "$release_notes"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-           echo "- PullRequest: ${{ github.event.pull_request.number }}" >> "$release_notes"
+            echo "- PullRequest: ${{ github.event.pull_request.number }}" >> "$release_notes"
           fi
           echo "- Build Configuration: $CONFIG" >> "$release_notes"
           echo "- Build: ${{ github.run_number }}" >> "$release_notes"
@@ -417,56 +404,60 @@ jobs:
           echo "- GIT commit: ${{ github.sha }}" >> "$release_notes"
           echo "- GIT url: ${{ github.server_url }}/${{ github.repository }}" >> "$release_notes"
           echo "- GIT branch: ${{ github.ref_name }}" >> "$release_notes"
-          echo "_____________" >> "$release_notes"   
+          echo "_____________" >> "$release_notes"
+
           echo "Release Notes: " >> "$release_notes"
           echo "- $PR_RELEASE_NOTES_INPUT" >> "$release_notes"
+
           if [[ -n "$PR_MILESTONE" ]]; then
             curl -s -H "Authorization: Bearer $GIT_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/issues?state=closed" > issues.json
-  
-  
+
             prs=$(cat issues.json | jq -r --arg m "$PR_MILESTONE" \
-              '.[] | select(.milestone.title == $m and (.labels[]?.name == "Release Notes")) | .pull_request.url' | grep "api.github.com" || true)
+              '.[] | select(.milestone.title == $m and (.labels[]?.name == "Release Notes")) | .pull_request.url' \
+              | grep "api.github.com" || true)
 
             for url in $prs; do
-              pr_id=$(basename "$url")
               pr=$(curl -s -H "Authorization: Bearer $GIT_TOKEN" "$url")
-              if [[ "$(echo "$pr" | jq -r '.merged')" == "true" ]]; then
+              
+              if [ 1 ]; then
                 echo "- $(echo "$pr" | jq -r '.body // empty')" >> "$release_notes"
               fi
             done
           fi
+
           echo "RELEASE_NOTES_FILE=$release_notes" >> $GITHUB_ENV
-      - name: Stage artifacts
+
+      - name: Stage Artifacts
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
           CONFIG: ${{ github.event.inputs.configuration || 'Enterprise-QA' }}
-          ARCHIVE_PATH: ${{ env.ARCHIVE_PATH }}
         run: |
           set -e
-
           STAGING_DIR="$GITHUB_WORKSPACE/artifacts"
           mkdir -p "$STAGING_DIR"
 
           echo "Staging IPA .."
           find "$GITHUB_WORKSPACE" -type f -name "*.ipa" -not -path "$STAGING_DIR/*" \
-            -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}.ipa" \;
+            -exec cp -a {} "$STAGING_DIR/${{ github.run_number }}-${CONFIG}.ipa" \;
 
           echo "Staging debug symbols .."
           find "$GITHUB_WORKSPACE" -type f -name "*dSYM.zip" -not -path "$STAGING_DIR/*" \
-            -exec cp -a {} "$STAGING_DIR/${BUILD_NUMBER}-${CONFIG}-dSYM.zip" \;
+            -exec cp -a {} "$STAGING_DIR/${{ github.run_number }}-${CONFIG}-dSYM.zip" \;
 
           echo "Staging release notes .."
           cat "$GITHUB_WORKSPACE"/*"${CONFIG}"*.md || true
           cp "$GITHUB_WORKSPACE"/*"${CONFIG}"*.md "$STAGING_DIR/" || echo "No release notes found"
+
           echo "Staging xcarchive .."
           if [ -d "${ARCHIVE_PATH}.xcarchive" ]; then
             zip -r "$STAGING_DIR/$(basename "$ARCHIVE_PATH").xcarchive.zip" "${ARCHIVE_PATH}.xcarchive"
           else
             echo "Warning: xcarchive not found at ${ARCHIVE_PATH}.xcarchive"
           fi
+
           echo "Sanity check - staged artifacts:"
           ls -alt "$STAGING_DIR" | grep "$CONFIG" || true
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
