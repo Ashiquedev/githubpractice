@@ -1,0 +1,197 @@
+name: Costco iOS
+
+on:
+  push:
+    branches:
+      - develop
+      - 'releases/release-*'
+      - 'hotfix-*'
+  pull_request:
+    branches:
+      - develop
+      - 'releases/release-*'
+      - 'hotfix-*'
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build Configuration
+        required: true
+        default: Enterprise-QA
+        type: choice
+        options:
+          - Enterprise-QA
+          - Release
+      release_notes:
+        description: Release Notes
+        required: false
+        default: Release Notes
+        type: string
+      force_upload_simulator_build:
+        description: Force simulator build upload to Pipelines Artifacts (Debug configuration)
+        required: false
+        default: false
+        type: boolean
+      force_upload_saucelabs_build:
+        description: Force device build upload to SauceLabs (Enterprise-QA configuration)
+        required: false
+        default: false
+        type: boolean
+
+env:
+  WORKSPACE: ${{ github.workspace }}
+  GIT_API_URL: https://github.com/nxt-costco-com/costco-ios
+  SAUCELABS_API: https://api.us-west-1.saucelabs.com/v1/storage/upload
+  SAUCELABS_PACKAGE_ALIAS: CostcoDebug.zip
+  SAUCELABS_IPA_ALIAS: CostcoRelease.ipa
+  VERACODE_URL: https://tools.veracode.com/integrations/xcode/com.veracode.mobileapplicationpackager.dmg
+  ENTERPRISE_TEAM_ID: TGWXEY4D6F
+  APPSTORE_TEAM_ID: MCL67DL73Q
+  SCHEME: Costco
+  XCODE_VERSION: "26.2"
+  OS_VERSION: "26.2"
+  MACOS_RUNNER: macos-15
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REUSABLE: decrypt signing files + install NokNok SSH deploy key
+# (duplicated in two jobs in the original; extracted here as a composite-style
+#  set of steps that each job calls via a local action or just inlines)
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CI — runs only on pull_request events (mirrors the AzDO CI stage)
+  # ───────────────────────────────────────────────────────────────────────────
+  ci:
+    name: Build (CI)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          clean: true
+      
+      - name: Check Merge Status
+        shell: bash
+        run: |
+          echo "Testing merge .."
+
+          (
+            set -e
+
+            # Create local branch from PR HEAD
+            git checkout -b local/ci
+
+            # Git config
+            git config user.email "iseas@costco.com"
+            git config user.name "$(hostname)"
+
+            TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+
+            # Fetch target branch explicitly
+            git fetch origin "$TARGET_BRANCH"
+
+            # Checkout target branch cleanly
+            git checkout -B target "origin/$TARGET_BRANCH"
+
+            # Attempt merge
+            git merge --no-ff local/ci
+          )
+
+          if [ $? -ne 0 ]; then
+            echo "Found merge errors"
+            exit 1
+          fi
+
+          echo "No merge issues"
+      - name:  Decrypt secure files
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          CONFIGURATION: ${{ github.event.inputs.configuration }}
+          CIPHER: ${{ secrets.CIPHER }}
+        run: |
+          set -e    
+          echo "Using configuration: $CONFIGURATION"
+          find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
+            echo "decrypting file: ${f%.*}"
+            openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
+            rm -f "$f"
+          done
+          echo "decrypting noknok ssh key"
+          openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
+          echo "listing decrypted files .."
+          ls -altr
+      - name: Install NokNok SSH Deploy Key
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          PASS: ${{ secrets.NOK_PWD }}
+        run: |
+          set -e
+          SSH_DIR="$HOME/.ssh"
+          SSH_CONFIG="$SSH_DIR/config"
+          KEY_PATH="$(pwd)/noknok_deploy_key"
+          mkdir -p "$SSH_DIR"
+          chmod 700 "$SSH_DIR"
+          if [ ! -f "$SSH_CONFIG" ] || ! grep -q "UseKeychain" "$SSH_CONFIG"; then
+            echo "Adding macOS Keychain rules to SSH config..."
+            cat > "$SSH_CONFIG" << EOF
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile $KEY_PATH
+            IdentitiesOnly yes
+            UseKeychain yes
+            AddKeysToAgent yes
+            StrictHostKeyChecking no
+          EOF
+            chmod 600 "$SSH_CONFIG"
+          fi
+          chmod 600 "$KEY_PATH"
+          eval "$(ssh-agent -s)"
+          echo "Unlocking and adding the key to the agent..."
+          echo "$PASS" | ssh-add "$KEY_PATH"
+          echo "Currently loaded keys:"
+          ssh-add -l
+          echo "GIT_SSH_COMMAND=ssh -i $KEY_PATH -o IdentitiesOnly=yes" >> $GITHUB_ENV
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
+          ssh -T git@github.com || true
+          git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+      - name: Set Target Simulator
+        env:
+          XCODE_VERSION: ${{ env.XCODE_VERSION }}
+          OS_VERSION: ${{ env.OS_VERSION }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Setting xcode version to: ${XCODE_VERSION} .."
+          sudo xcode-select -switch "/Applications/Xcode_${XCODE_VERSION}.app"
+
+          simulators=$(xcrun xctrace list devices | grep -i iphone | grep -i pro | grep -v "+")
+
+          if [ -z "$simulators" ]; then
+            echo "No matching simulators found"
+            exit 1
+          fi
+
+          count=$(echo "$simulators" | wc -l)
+          index=$((count / 2))
+
+          # Ensure index is at least 1
+          if [ "$index" -lt 1 ]; then
+            index=1
+          fi
+
+          simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
+          device_name=$(echo "$simulator" | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
+
+          echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
+          echo "OSVERSION=${OS_VERSION}" >> "$GITHUB_ENV"
+
+          echo "Auto-selected iOS simulator: ${device_name}"
+          echo "Setting iOS version: ${OS_VERSION} .."
