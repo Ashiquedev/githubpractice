@@ -58,12 +58,8 @@ env:
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # CI — runs only on pull_request events (mirrors the AzDO CI stage)
-  # ───────────────────────────────────────────────────────────────────────────
-  ci:
-    name: Build (CI)
+  pr-validation:
+    name: pre-merge-check
     if: github.event_name == 'pull_request'
     runs-on: macos-15
 
@@ -111,7 +107,7 @@ jobs:
       - name:  Decrypt secure files
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
-          CONFIGURATION: ${{ github.event.inputs.configuration }}
+          CONFIGURATION: "${{ github.event.inputs.configuration || 'Enterprise-QA' }}"
           CIPHER: ${{ secrets.CIPHER }}
         run: |
           set -e    
@@ -203,6 +199,10 @@ jobs:
           set -e
           echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."          
           _sdk="$(xcodebuild -showsdks | grep -i iphonesimulator | awk '{print $NF}' | xargs  || true)"
+          if [ -z "$_sdk" ]; then
+            echo "::error::Failed to detect iOS simulator SDK"
+            exit 1
+          fi
           echo "SDK=${_sdk}" >> $GITHUB_ENV
           echo "Detected SDK: $_sdk"
           xcodebuild -version
@@ -251,9 +251,9 @@ jobs:
             -scheme $SCHEME \
             -sdk $SDK \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OSVERSION" \
+            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OS_VERSION" \
             -parallel-testing-enabled NO \
-            -derivedDataPath "${{ github.workspace }}/derivedData" \
+            -derivedDataPath "${GITHUB_WORKSPACE}/derivedData" \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output-dir derivedData/test-reports
     
