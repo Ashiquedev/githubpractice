@@ -64,8 +64,6 @@ env:
   OS_VERSION: '26.2'
 
 jobs:
-  # 1. Classify Job (Calling a Job Template)
-  # ADO: .azure-pipeline-templates/pr-state-job-template.yml
   Classify:
     uses: ./.github/workflows/pr-state-job-template.yml
     if: |
@@ -79,10 +77,8 @@ jobs:
   Debug:
     name: Build (Enterprise-QA)
     needs: Classify
-    # ADO: condition: ne(dependencies.Classify.outputs['pull_request.ID'], '')
     if: ${{ needs.Classify.outputs.pull_request_id != '' }}
-    runs-on: macos-latest # Maps to $(macos)
-    
+    runs-on: $MACOS
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4

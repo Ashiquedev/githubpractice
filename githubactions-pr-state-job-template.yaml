@@ -33,18 +33,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install GitHub CLI (if missing)
-        run: |
-          if ! command -v gh &> /dev/null; then
-            echo "GH CLI not found, installing..."
-            type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update
-            sudo apt install gh -y
-          fi
-          
       - name: Inspect PR State
         id: set_vars
         env:
@@ -86,10 +74,13 @@ jobs:
           # -----------------------------
           echo "Fetching PR data from GitHub API..."
 
-          pr_json=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          if ! pr_json=$(curl -s -L --fail \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/$pr")
-
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$pr"); then
+            echo "Failed to fetch PR data"
+            exit 1
+          fi
           milestone=$(echo "$pr_json" | jq -r '.milestone.title // ""')
           state=$(echo "$pr_json" | jq -r '.state')
           notes=$(echo "$pr_json" | jq -r '.body // "---"')

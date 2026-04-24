@@ -30,11 +30,11 @@ jobs:
       CONFIG: ${{ github.event.inputs.configuration }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
           fetch-tags: false
-
+          clean: true
       - name: Version increment
         working-directory: ${{ github.workspace }}/Costco
         run: |
@@ -128,7 +128,6 @@ jobs:
               security import "./$p" -k "$keychain" -P "$CIPHER" -A
             fi
           done 
-          #security set-key-partition-list -S apple-tool:,apple: -s -k "$CIPHER" "$keychain" || true
           echo "COSTCO_KEYCHAIN=$keychain" >> $GITHUB_ENV
           echo "generated keychain: $keychain"
 
@@ -297,7 +296,7 @@ jobs:
             -archivePath $ARCHIVE_PATH \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY=$CODESIGN_ID \
-            # PROVISIONING_PROFILE_SPECIFIER=$(PROVISIONING_PROFILE) \
+
             APP_PROFILE=$PROVISIONING_PROFILE \
             EXTENSION_PROFILE=$EXT_PROVISIONING_PROFILE \
             EXTENSION_PROFILE=$EXT_WIDGET_PROVISIONING_PROFILE \
