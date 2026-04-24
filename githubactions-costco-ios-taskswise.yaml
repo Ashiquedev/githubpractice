@@ -172,26 +172,94 @@ jobs:
           echo "Setting xcode version to: ${XCODE_VERSION} .."
           sudo xcode-select -switch "/Applications/Xcode_${XCODE_VERSION}.app"
 
-          simulators=$(xcrun xctrace list devices | grep -i iphone | grep -i pro | grep -v "+")
+          simulators=$(xcrun xctrace list devices 2>&1 | grep -i iphone | grep -i pro | grep -v "+")
 
           if [ -z "$simulators" ]; then
             echo "No matching simulators found"
             exit 1
           fi
 
-          count=$(echo "$simulators" | wc -l)
-          index=$((count / 2))
-
-          # Ensure index is at least 1
+          count=$(echo "$simulators" | wc -l | tr -d '[:space:]')
+          index=$(( count / 2 ))
           if [ "$index" -lt 1 ]; then
             index=1
           fi
-
           simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
           device_name=$(echo "$simulator" | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
+
+          if [ -z "$device_name" ]; then
+            echo "::error::Failed to parse simulator name"
+            exit 1
+          fi
 
           echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
           echo "OSVERSION=${OS_VERSION}" >> "$GITHUB_ENV"
 
           echo "Auto-selected iOS simulator: ${device_name}"
           echo "Setting iOS version: ${OS_VERSION} .."
+
+      - name: Set SDK
+        run: |
+          set -e
+          echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."          
+          _sdk="$(xcodebuild -showsdks | grep -i iphonesimulator | awk '{print $NF}' | xargs  || true)"
+          echo "SDK=${_sdk}" >> $GITHUB_ENV
+          echo "Detected SDK: $_sdk"
+          xcodebuild -version
+
+      - name:  Set Time Zone
+        run: |
+          sudo systemsetup -settimezone America/Los_Angeles
+
+      - name: List Runtimes
+        run: xcrun simctl list runtimes
+      
+      - name: Install Distributions
+        env:
+          SDK: ${{ env.SDK }}
+        run: |
+          echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+          version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
+          echo "Checking for iOS runtime version: $version"
+          if xcrun simctl list runtimes | grep -Eq "\b${version}\b"; then
+            echo "Distribution SDK is already present"
+          else
+            echo "Required SDK not available, Installing the verson $SDK"
+            cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+            xcodebuild -downloadPlatform iOS -buildVersion "$version"
+            echo "Installed the distributions"
+          fi
+      - name: Install xcpretty
+        run: |
+          sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
+      
+      - name: CI Build
+        env:
+          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
+          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
+          OS_VERSION: ${{ env.OS_VERSION }}
+          SIMULATOR: ${{ env.SIMULATOR }}
+          SCHEME: ${{ env.SCHEME }}
+          SDK: ${{ env.SDK }}
+        run: |
+          set -e    
+          xcodebuild \
+            test \
+            -workspace ${{ github.workspace }}/Costco/Costco.xcworkspace \
+            -scheme $SCHEME \
+            -sdk $SDK \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OSVERSION" \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "${{ github.workspace }}/derivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty --report junit --output-dir derivedData/test-reports
+    
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: derivedData/test-reports/
