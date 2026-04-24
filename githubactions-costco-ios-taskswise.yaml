@@ -51,12 +51,6 @@ env:
   OS_VERSION: "26.2"
   MACOS_RUNNER: macos-15
 
-# ─────────────────────────────────────────────────────────────────────────────
-# REUSABLE: decrypt signing files + install NokNok SSH deploy key
-# (duplicated in two jobs in the original; extracted here as a composite-style
-#  set of steps that each job calls via a local action or just inlines)
-# ─────────────────────────────────────────────────────────────────────────────
-
 jobs:
   pr-validation:
     name: pre-merge-check
@@ -64,53 +58,48 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - name: Checkout Repo
+      - name: Code Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           fetch-tags: false
           clean: true
-      
+          persist-credentials: true
+
       - name: Check Merge Status
         shell: bash
         run: |
+          set -e
           echo "Testing merge .."
 
-          (
-            set -e
+          # Create local branch from PR HEAD
+          git checkout -b local/ci
 
-            # Create local branch from PR HEAD
-            git checkout -b local/ci
+          # Set base git configuration
+          git config user.email "iseas@costco.com"
+          git config user.name "$(hostname)"
 
-            # Git config
-            git config user.email "iseas@costco.com"
-            git config user.name "$(hostname)"
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
 
-            TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          # Fetch and checkout target branch
+          git fetch origin "$TARGET_BRANCH"
+          git checkout -B target "origin/$TARGET_BRANCH"
 
-            # Fetch target branch explicitly
-            git fetch origin "$TARGET_BRANCH"
-
-            # Checkout target branch cleanly
-            git checkout -B target "origin/$TARGET_BRANCH"
-
-            # Attempt merge
-            git merge --no-ff local/ci
-          )
-
-          if [ $? -ne 0 ]; then
+          # Attempt merge 
+          if ! git merge --no-ff local/ci; then
             echo "Found merge errors"
             exit 1
           fi
 
           echo "No merge issues"
-      - name:  Decrypt secure files
+      - name: Decrypt Secure Files
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
-          CONFIGURATION: "${{ github.event.inputs.configuration || 'Enterprise-QA' }}"
+          CONFIGURATION: "Enterprise-QA"
           CIPHER: ${{ secrets.CIPHER }}
         run: |
-          set -e    
+          #!/bin/bash
+          set -e
           echo "Using configuration: $CONFIGURATION"
           find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
             echo "decrypting file: ${f%.*}"
@@ -121,11 +110,13 @@ jobs:
           openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
           echo "listing decrypted files .."
           ls -altr
+
       - name: Install NokNok SSH Deploy Key
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
           PASS: ${{ secrets.NOK_PWD }}
         run: |
+          #!/bin/bash
           set -e
           SSH_DIR="$HOME/.ssh"
           SSH_CONFIG="$SSH_DIR/config"
@@ -146,6 +137,7 @@ jobs:
           EOF
             chmod 600 "$SSH_CONFIG"
           fi
+          chmod 600 "$SSH_CONFIG"
           chmod 600 "$KEY_PATH"
           eval "$(ssh-agent -s)"
           echo "Unlocking and adding the key to the agent..."
@@ -157,21 +149,18 @@ jobs:
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
           ssh -T git@github.com || true
           git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+
       - name: Set Target Simulator
-        env:
-          XCODE_VERSION: ${{ env.XCODE_VERSION }}
-          OS_VERSION: ${{ env.OS_VERSION }}
         shell: bash
         run: |
           set -e
-
-          echo "Setting xcode version to: ${XCODE_VERSION} .."
-          sudo xcode-select -switch "/Applications/Xcode_${XCODE_VERSION}.app"
+          echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
+          sudo xcode-select -switch "/Applications/Xcode_${{ env.XCODE_VERSION }}.app"
 
           simulators=$(xcrun xctrace list devices 2>&1 | grep -i iphone | grep -i pro | grep -v "+")
 
           if [ -z "$simulators" ]; then
-            echo "No matching simulators found"
+            echo "::error::No matching simulators found"
             exit 1
           fi
 
@@ -180,6 +169,7 @@ jobs:
           if [ "$index" -lt 1 ]; then
             index=1
           fi
+
           simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
           device_name=$(echo "$simulator" | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
 
@@ -189,16 +179,17 @@ jobs:
           fi
 
           echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
-          echo "OSVERSION=${OS_VERSION}" >> "$GITHUB_ENV"
+          echo "OS_VERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
 
           echo "Auto-selected iOS simulator: ${device_name}"
-          echo "Setting iOS version: ${OS_VERSION} .."
+          echo "Setting iOS version: ${{ env.OS_VERSION }} .."
 
       - name: Set SDK
         run: |
+          #!/bin/bash
           set -e
-          echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."          
-          _sdk="$(xcodebuild -showsdks | grep -i iphonesimulator | awk '{print $NF}' | xargs  || true)"
+          echo "Detecting SDK for Xcode ${{ env.XCODE_VERSION }} .."
+          _sdk="$(xcodebuild -showsdks | grep -i iphonesimulator | awk '{print $NF}' | xargs || true)"
           if [ -z "$_sdk" ]; then
             echo "::error::Failed to detect iOS simulator SDK"
             exit 1
@@ -207,17 +198,17 @@ jobs:
           echo "Detected SDK: $_sdk"
           xcodebuild -version
 
-      - name:  Set Time Zone
-        run: |
-          sudo systemsetup -settimezone America/Los_Angeles
+      - name: Set Time Zone
+        run: sudo systemsetup -settimezone America/Los_Angeles
 
       - name: List Runtimes
         run: xcrun simctl list runtimes
-      
       - name: Install Distributions
         env:
           SDK: ${{ env.SDK }}
         run: |
+          #!/bin/bash
+          set -e
           echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
           sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
           version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
@@ -225,16 +216,16 @@ jobs:
           if xcrun simctl list runtimes | grep -Eq "\b${version}\b"; then
             echo "Distribution SDK is already present"
           else
-            echo "Required SDK not available, Installing the verson $SDK"
+            echo "Required SDK not available, installing version $SDK"
             cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
             xcodebuild -downloadPlatform iOS -buildVersion "$version"
             echo "Installed the distributions"
           fi
+
       - name: Install xcpretty
-        run: |
-          sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
-      
-      - name: CI Build
+        run: sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
+
+      - name: Run Unit Tests
         env:
           GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
           SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
@@ -244,19 +235,19 @@ jobs:
           SCHEME: ${{ env.SCHEME }}
           SDK: ${{ env.SDK }}
         run: |
-          set -e    
+          set -eo pipefail
           xcodebuild \
             test \
-            -workspace ${{ github.workspace }}/Costco/Costco.xcworkspace \
-            -scheme $SCHEME \
-            -sdk $SDK \
+            -workspace "${{ github.workspace }}/Costco/Costco.xcworkspace" \
+            -scheme "$SCHEME" \
+            -sdk "$SDK" \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OS_VERSION" \
+            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OSVERSION" \
             -parallel-testing-enabled NO \
-            -derivedDataPath "${GITHUB_WORKSPACE}/derivedData" \
+            -derivedDataPath "${{ github.workspace }}/derivedData" \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output-dir derivedData/test-reports
-    
+
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
         if: always()
