@@ -37,7 +37,7 @@ jobs:
           clean: true
       
       - name: Install xcpretty
-        run: gem install xcpretty --no-document
+        run: sudo gem install xcpretty --no-document
 
       - name: Version increment
         working-directory: ${{ github.workspace }}/Costco

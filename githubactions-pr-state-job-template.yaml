@@ -8,13 +8,13 @@ on:
         type: string
         default: 'PR'
     outputs:
-      ID:
+      PR_ID:
         description: "The Pull Request ID"
         value: ${{ jobs.Classify.outputs.ID }}
-      MILESTONE:
+      PR_MILESTONE:
         description: "The Milestone title"
         value: ${{ jobs.Classify.outputs.MILESTONE }}
-      RELEASE_NOTES:
+      PR_RELEASE_NOTES:
         description: "Release Notes"
         value: ${{ jobs.Classify.outputs.RELEASE_NOTES }}
 

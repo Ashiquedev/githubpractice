@@ -254,3 +254,72 @@ jobs:
         with:
           name: test-results
           path: derivedData/test-reports/
+
+  classify:
+      name: Inspect pull-request
+      if: github.event_name == 'push' || github.event_name == 'pull_request'
+      runs-on: ubuntu-latest 
+      outputs:
+        PR_ID: ${{ steps.set_vars.outputs.PR_ID }}
+        PR_MILESTONE: ${{ steps.set_vars.outputs.PR_MILESTONE }}
+        PR_RELEASE_NOTES: ${{ steps.set_vars.outputs.PR_RELEASE_NOTES }}
+      uses: ./.github/workflows/pr-state-job.yml
+      with:
+        variable_prefix: PR
+      secrets: inherit
+  
+  debug:
+    name: Build (Enterprise-QA)
+    needs: classify    
+    if: needs.classify.outputs.PR_ID != '' && 
+      (contains(github.ref, 'refs/heads/develop')
+    runs-on: macos-15 
+    timeout-minutes: 180
+    steps:
+      - name: Execute Build Template
+        uses: ./.github/workflows/build-task-template.yml
+        with:
+          configuration: 'Enterprise-QA'
+          PR_ID: ${{ needs.classify.outputs.PR_ID }}
+          PR_MILESTONE: ${{ needs.classify.outputs.PR_MILESTONE }}
+          PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}
+        secrets: inherit
+  
+  release:
+    name: Build (Release)
+    needs: classify    
+    if: |
+      needs.classify.outputs.PR_ID != '' && 
+      (contains(github.ref, 'refs/heads/release') || contains(github.ref, 'refs/heads/hotfix'))
+    runs-on: macos-15 
+    timeout-minutes: 180
+    steps:
+      - name: Execute Build Template
+        uses: ./.github/workflows/build-task-template.yml
+        with:
+          configuration: 'Release'
+          PR_ID: ${{ needs.classify.outputs.PR_ID }}
+          PR_MILESTONE: ${{ needs.classify.outputs.PR_MILESTONE }}
+          PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}
+        secrets: inherit
+ 
+  build-test:
+    name: Build (Build For Testing)
+    needs: classify
+    if: |
+      github.event.inputs.force_upload_simulator_build == 'true' || 
+      github.event.inputs.force_upload_saucelabs_build == 'true' || 
+      (needs.classify.outputs.PR_ID != '' && github.ref == 'refs/heads/develop')
+    
+    runs-on: macos-15
+    
+    env:
+      XCUI_TEST_BUILD_PATH: ${{ github.workspace }}/derivedData/Build/Products/Debug-iphonesimulator/
+
+    steps:
+      - name: Code Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          clean: true
