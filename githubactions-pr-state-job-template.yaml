@@ -23,9 +23,9 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     outputs:
-      ID: ${{ steps.set_vars.outputs.ID }}
-      MILESTONE: ${{ steps.set_vars.outputs.MILESTONE }}
-      RELEASE_NOTES: ${{ steps.set_vars.outputs.RELEASE_NOTES }}
+      PR_ID: ${{ steps.set_vars.outputs.PR_ID }}
+      PR_MILESTONE: ${{ steps.set_vars.outputs.PR_MILESTONE }}
+      PR_RELEASE_NOTES: ${{ steps.set_vars.outputs.PR_RELEASE_NOTES }}
     
     steps:
       - name: Checkout Code
@@ -91,8 +91,8 @@ jobs:
           # -----------------------------
           # 4. Set outputs
           # -----------------------------
-          echo "ID=$pr" >> $GITHUB_OUTPUT
-          echo "MILESTONE=$milestone" >> $GITHUB_OUTPUT
-          echo "RELEASE_NOTES=$notes" >> $GITHUB_OUTPUT
+          echo "PR_ID=$pr" >> $GITHUB_OUTPUT
+          echo "PR_MILESTONE=$milestone" >> $GITHUB_OUTPUT
+          echo "PR_RELEASE_NOTES=$notes" >> $GITHUB_OUTPUT
 
-          echo "=== PR CLASSIFICATION END ===
+          echo "=== PR CLASSIFICATION END ==="

@@ -1,6 +1,7 @@
 name: Costco iOS
 
 on:
+  workflow_call:
   push:
     branches:
       - develop
@@ -271,8 +272,7 @@ jobs:
   debug:
     name: Build (Enterprise-QA)
     needs: classify    
-    if: needs.classify.outputs.PR_ID != '' && 
-      (contains(github.ref, 'refs/heads/develop')
+    if: needs.classify.outputs.PR_ID != '' && contains(github.ref, 'refs/heads/develop')
     runs-on: macos-15 
     timeout-minutes: 180
     steps:
@@ -303,7 +303,7 @@ jobs:
           PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}
         secrets: inherit
  
-  build-test:
+  build-for-test-platforms:
     name: Build (Build For Testing)
     needs: classify
     if: |
@@ -323,3 +323,178 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           clean: true
+      - name: Decrypt Secure Files
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          CONFIGURATION: "Enterprise-QA"
+          CIPHER: ${{ secrets.CIPHER }}
+        run: |
+          #!/bin/bash
+          set -e
+          echo "Using configuration: $CONFIGURATION"
+          find . -name "*.enc" | grep "$CONFIGURATION" | while read -r f; do
+            echo "decrypting file: ${f%.*}"
+            openssl des3 -d -in "$f" -out "${f%.*}" -k "$CIPHER"
+            rm -f "$f"
+          done
+          echo "decrypting noknok ssh key"
+          openssl des3 -d -in noknok_deploy_key.enc -out noknok_deploy_key -k "$CIPHER"
+          echo "listing decrypted files .."
+          ls -altr
+
+      - name: Install NokNok SSH Deploy Key
+        working-directory: ${{ github.workspace }}/Costco/Signing
+        env:
+          PASS: ${{ secrets.NOK_PWD }}
+        run: |
+          #!/bin/bash
+          set -e
+          SSH_DIR="$HOME/.ssh"
+          SSH_CONFIG="$SSH_DIR/config"
+          KEY_PATH="$(pwd)/noknok_deploy_key"
+          mkdir -p "$SSH_DIR"
+          chmod 700 "$SSH_DIR"
+          if [ ! -f "$SSH_CONFIG" ] || ! grep -q "UseKeychain" "$SSH_CONFIG"; then
+            echo "Adding macOS Keychain rules to SSH config..."
+            cat > "$SSH_CONFIG" << EOF
+          Host github.com
+            HostName github.com
+            User git
+            IdentityFile $KEY_PATH
+            IdentitiesOnly yes
+            UseKeychain yes
+            AddKeysToAgent yes
+            StrictHostKeyChecking no
+          EOF
+            chmod 600 "$SSH_CONFIG"
+          fi
+          chmod 600 "$SSH_CONFIG"
+          chmod 600 "$KEY_PATH"
+          eval "$(ssh-agent -s)"
+          echo "Unlocking and adding the key to the agent..."
+          echo "$PASS" | ssh-add "$KEY_PATH"
+          echo "Currently loaded keys:"
+          ssh-add -l
+          echo "GIT_SSH_COMMAND=ssh -i $KEY_PATH -o IdentitiesOnly=yes" >> $GITHUB_ENV
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
+          ssh -T git@github.com || true
+          git ls-remote git@github.com:nxt-costco-com/noknok-ios-sdk.git
+
+      - name: Set Target Simulator
+        shell: bash
+        run: |
+          set -e
+          echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
+          sudo xcode-select -switch "/Applications/Xcode_${{ env.XCODE_VERSION }}.app"
+
+          simulators=$(xcrun xctrace list devices 2>&1 | grep -i iphone | grep -i pro | grep -v "+")
+
+          if [ -z "$simulators" ]; then
+            echo "::error::No matching simulators found"
+            exit 1
+          fi
+
+          count=$(echo "$simulators" | wc -l | tr -d '[:space:]')
+          index=$(( count / 2 ))
+          if [ "$index" -lt 1 ]; then
+            index=1
+          fi
+
+          simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
+          device_name=$(echo "$simulator" | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
+
+          if [ -z "$device_name" ]; then
+            echo "::error::Failed to parse simulator name"
+            exit 1
+          fi
+
+          echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
+          echo "OS_VERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
+
+          echo "Auto-selected iOS simulator: ${device_name}"
+          echo "Setting iOS version: ${{ env.OS_VERSION }} .."
+
+      
+      - name: List Runtimes
+        run: xcrun simctl list runtimes
+      - name: Install Distributions
+        env:
+          SDK: ${{ env.SDK }}
+        run: |
+          #!/bin/bash
+          set -e
+          echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
+          sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
+          version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
+          echo "Checking for iOS runtime version: $version"
+          if xcrun simctl list runtimes | grep -Eq "\b${version}\b"; then
+            echo "Distribution SDK is already present"
+          else
+            echo "Required SDK not available, installing version $SDK"
+            cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
+            xcodebuild -downloadPlatform iOS -buildVersion "$version"
+            echo "Installed the distributions"
+          fi
+
+      - name: Install xcpretty
+        run: sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
+
+      - name: Build for testing
+        env:
+          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
+          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
+        run: |
+          set -eo pipefail
+          xcodebuild clean build-for-testing \
+            -workspace "${{ github.workspace }}/Costco/Costco.xcworkspace" \
+            -scheme "${{ env.SCHEME }}" \
+            -configuration Debug \
+            -sdk "${{ env.SDK }}" \
+            -derivedDataPath "${{ github.workspace }}/derivedData" \
+            -destination "platform=iOS Simulator,name=${{ env.SIMULATOR }},OS=${{ env.OS_VERSION }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Archive Test Artifacts for AppCenter
+        run: |
+          cd "${{ env.XCUI_TEST_BUILD_PATH }}"
+          zip -r "${{ github.workspace }}/artifacts/${{ github.run_number }}-TestBuild.zip" .
+          
+      # 3. Prepare SauceLabs artifact (replaces Bash@3)
+      - name: Prepare SauceLabs artifact
+        run: |
+          set -e
+          # Find the .app excluding the -Runner app
+          app_path=$(find -L "${{ env.XCUI_TEST_BUILD_PATH }}" -name "*.app" 2>/dev/null | grep -iv "\-runner" | head -n 1)
+          
+          app_dir=$(dirname "${app_path}")
+          app_name=$(basename "${app_path}")
+          
+          echo "Archiving for SauceLabs: ${app_name}"
+          cd "${app_dir}"
+          zip -r "${{ github.workspace }}/artifacts/CostcoDebug.zip" "${app_name}"
+          
+      - name: Publish build-test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-test
+          path: ${{ github.workspace }}/artifacts/
+
+manual:
+    name: Build (Manual)
+    needs: classify    
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15 
+    timeout-minutes: 180
+    steps:
+      - name: Execute Build Template
+        uses: ./.github/workflows/build-task-template.yml
+        with:
+          configuration: ${{ github.event.inputs.configuration }}
+          PR_ID: 'manual'
+          PR_MILESTONE: 'none'
+          PR_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+        secrets: inherit
+ 
