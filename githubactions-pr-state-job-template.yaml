@@ -20,7 +20,9 @@ on:
 
 jobs:
   Classify:
-    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    # FIX #3: only run on push (matches AzDO IndividualCI/BatchedCI behaviour)
+    # Original excluded pull_request events — only CI push merges were classified
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       PR_ID: ${{ steps.set_vars.outputs.PR_ID }}
