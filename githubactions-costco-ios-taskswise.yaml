@@ -282,8 +282,7 @@ jobs:
     secrets: inherit
  
   manual:
-      name: Build (Manual)
-      needs: classify    
+      name: Build (Manual)  
       if: github.event_name == 'workflow_dispatch'
       uses: ./.github/workflows/build-task-template.yml
       with:
@@ -440,7 +439,7 @@ jobs:
             -configuration Debug \
             -sdk "${{ env.SIMULATOR_SDK }}" \
             -derivedDataPath "${{ github.workspace }}/derivedData" \
-            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=OS=$OSVERSION" \
+            -destination "platform=iOS Simulator,name=$SIMULATOR,OS=$OSVERSION" \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
  
@@ -472,24 +471,24 @@ jobs:
 
   appcenter_tests:
       name: AppCenter Tests
-      needs: [debug, testing]
+      needs: [debug, build-for-test-platforms]
       if: github.ref == 'refs/heads/develop'
       runs-on: macos-15
 
-      variables:
+      env:
         APP_CENTER_DEVICES: 'apps-lxue/iphone-14-pro'
 
       steps:
         - name: Download Debug IPA
           uses: actions/download-artifact@v4
           with:
-            name: build 
+            name: ios-build-${{ github.run_number }}
             path: build_artifacts
 
         - name: Download Test Directory
           uses: actions/download-artifact@v4
           with:
-            name: testing
+            name: build-test
             path: testing_artifacts
 
         - name: List build artifacts

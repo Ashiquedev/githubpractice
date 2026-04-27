@@ -1,6 +1,7 @@
 name: costco-ios build
 
 on:
+  workflow_call:
   workflow_dispatch:
     inputs:
       configuration:
