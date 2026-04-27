@@ -390,7 +390,7 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG: ${{ inputs.configuration || github.event.inputs.configuration || 'Enterprise-QA' }}
-          PR_RELEASE_NOTES_VAL: ${{ inputs.PR_RELEASE_NOTES || github.event.inputs.release_notes || 'Release Notes' }}
+          PR_RELEASE_NOTES_INPUT: ${{ inputs.PR_RELEASE_NOTES || github.event.inputs.release_notes || 'Release Notes' }}
           PR_MILESTONE: ${{ inputs.PR_MILESTONE || github.event.pull_request.milestone.title || '' }}
         run: |
           set -e
