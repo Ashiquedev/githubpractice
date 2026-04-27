@@ -6,11 +6,13 @@ on:
       - develop
       - 'releases/release-*'
       - 'hotfix-*'
+      - 'sunil/*'
   pull_request:
     branches:
       - develop
       - 'releases/release-*'
       - 'hotfix-*'
+      - 'sunil/*'
   workflow_dispatch:
     inputs:
       configuration:
@@ -250,20 +252,19 @@ jobs:
   classify:
     name: Inspect pull-request
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    uses: ./.github/workflows/pr-state-job.yml
+    uses: ./.github/workflows/pr-state-job-template.yaml
     secrets: inherit
 
   debug:
     name: Build (Enterprise-QA)
     needs: classify    
     if: needs.classify.outputs.PR_ID != '' && contains(github.ref, 'refs/heads/develop')
-    uses: ./.github/workflows/build-task-template.yml
+    uses: ./.github/workflows/build-task-template.yaml
     with:
         configuration: 'Enterprise-QA'
         PR_ID: ${{ needs.classify.outputs.PR_ID }}
         PR_MILESTONE: ${{ needs.classify.outputs.PR_MILESTONE }}
         PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}         
-    timeout-minutes: 180
     secrets: inherit
   
   release:
@@ -272,25 +273,23 @@ jobs:
     if: |
       needs.classify.outputs.PR_ID != '' &&
       (contains(github.ref, 'refs/heads/release') || contains(github.ref, 'refs/heads/hotfix'))
-    uses: ./.github/workflows/build-task-template.yml
+    uses: ./.github/workflows/build-task-template.yaml
     with:
         configuration: 'Release'
         PR_ID: ${{ needs.classify.outputs.PR_ID }}
         PR_MILESTONE: ${{ needs.classify.outputs.PR_MILESTONE }}
-        PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}         
-    timeout-minutes: 180      
+        PR_RELEASE_NOTES: ${{ needs.classify.outputs.PR_RELEASE_NOTES }}     
     secrets: inherit
  
   manual:
       name: Build (Manual)  
       if: github.event_name == 'workflow_dispatch'
-      uses: ./.github/workflows/build-task-template.yml
+      uses: ./.github/workflows/build-task-template.yaml
       with:
           configuration: ${{ github.event.inputs.configuration }}
           PR_ID: 'manual'
           PR_MILESTONE: 'none'
           PR_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}           
-      timeout-minutes: 180
       secrets: inherit
 
   build-for-test-platforms:
@@ -301,7 +300,6 @@ jobs:
       github.event.inputs.force_upload_saucelabs_build == 'true' ||
       (needs.classify.outputs.PR_ID != '' && github.ref == 'refs/heads/develop')
     runs-on: macos-15
-    timeout-minutes: 180
 
     env:
       XCUI_TEST_BUILD_PATH: ${{ github.workspace }}/derivedData/Build/Products/Debug-iphonesimulator/

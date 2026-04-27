@@ -2,6 +2,24 @@ name: costco-ios build
 
 on:
   workflow_call:
+    inputs:
+      configuration:
+        description: 'Build Configuration'
+        required: true
+        type: string
+      PR_ID:
+        description: 'The Pull Request ID'
+        required: false
+        type: string
+      PR_MILESTONE:
+        description: 'The Milestone title'
+        required: false
+        type: string
+      PR_RELEASE_NOTES:
+        description: 'Release Notes'
+        required: false
+        type: string
+        
   workflow_dispatch:
     inputs:
       configuration:
