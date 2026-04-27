@@ -2,27 +2,20 @@ name: Inspect pull-request
 
 on:
   workflow_call:
-    inputs:
-      variable_prefix:
-        required: true
-        type: string
-        default: 'PR'
     outputs:
       PR_ID:
         description: "The Pull Request ID"
-        value: ${{ jobs.Classify.outputs.ID }}
+        value: ${{ jobs.Classify.outputs.PR_ID }}
       PR_MILESTONE:
         description: "The Milestone title"
-        value: ${{ jobs.Classify.outputs.MILESTONE }}
+        value: ${{ jobs.Classify.outputs.PR_MILESTONE }}
       PR_RELEASE_NOTES:
         description: "Release Notes"
-        value: ${{ jobs.Classify.outputs.RELEASE_NOTES }}
+        value: ${{ jobs.Classify.outputs.PR_RELEASE_NOTES }}
 
 jobs:
   Classify:
-    # FIX #3: only run on push (matches AzDO IndividualCI/BatchedCI behaviour)
-    # Original excluded pull_request events — only CI push merges were classified
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       PR_ID: ${{ steps.set_vars.outputs.PR_ID }}
@@ -34,6 +27,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          fetch-tags: false
+          clean: true
 
       - name: Inspect PR State
         id: set_vars

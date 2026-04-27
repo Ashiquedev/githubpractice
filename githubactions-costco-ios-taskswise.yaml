@@ -1,7 +1,6 @@
 name: Costco iOS
 
 on:
-  workflow_call:
   push:
     branches:
       - develop
@@ -73,26 +72,21 @@ jobs:
           set -e
           echo "Testing merge .."
 
-          # Create local branch from PR HEAD
           git checkout -b local/ci
-
-          # Set base git configuration
           git config user.email "iseas@costco.com"
           git config user.name "$(hostname)"
 
           TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
-
-          # Fetch and checkout target branch
           git fetch origin "$TARGET_BRANCH"
           git checkout -B target "origin/$TARGET_BRANCH"
 
-          # Attempt merge 
           if ! git merge --no-ff local/ci; then
             echo "Found merge errors"
             exit 1
           fi
 
           echo "No merge issues"
+
       - name: Decrypt Secure Files
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
@@ -159,7 +153,6 @@ jobs:
           sudo xcode-select -switch "/Applications/Xcode_${{ env.XCODE_VERSION }}.app"
 
           simulators=$(xcrun xctrace list devices 2>&1 | grep -i iphone | grep -i pro | grep -v "+")
-
           if [ -z "$simulators" ]; then
             echo "::error::No matching simulators found"
             exit 1
@@ -180,8 +173,7 @@ jobs:
           fi
 
           echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
-          echo "OS_VERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
-
+          echo "OSVERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
           echo "Auto-selected iOS simulator: ${device_name}"
           echo "Setting iOS version: ${{ env.OS_VERSION }} .."
 
@@ -204,9 +196,8 @@ jobs:
 
       - name: List Runtimes
         run: xcrun simctl list runtimes
+
       - name: Install Distributions
-        env:
-          SDK: ${{ env.SDK }}
         run: |
           #!/bin/bash
           set -e
@@ -227,14 +218,14 @@ jobs:
         run: sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
 
       - name: Run Unit Tests
-        env:
-          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
-          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
-          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
-          OS_VERSION: ${{ env.OS_VERSION }}
-          SIMULATOR: ${{ env.SIMULATOR }}
-          SCHEME: ${{ env.SCHEME }}
-          SDK: ${{ env.SDK }}
+        #env:
+        #  GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
+        #  SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
+        #  SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
+        #  OS_VERSION: ${{ env.OS_VERSION }}
+        #  SIMULATOR: ${{ env.SIMULATOR }}
+        #  SCHEME: ${{ env.SCHEME }}
+        #  SDK: ${{ env.SDK }}
         run: |
           set -eo pipefail
           xcodebuild \
@@ -249,7 +240,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output-dir derivedData/test-reports
 
-      - name: Upload Test Results
+      - name: Upload Unit Test Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -257,18 +248,11 @@ jobs:
           path: derivedData/test-reports/
 
   classify:
-      name: Inspect pull-request
-      if: github.event_name == 'push' || github.event_name == 'pull_request'
-      runs-on: ubuntu-latest 
-      outputs:
-        PR_ID: ${{ steps.set_vars.outputs.PR_ID }}
-        PR_MILESTONE: ${{ steps.set_vars.outputs.PR_MILESTONE }}
-        PR_RELEASE_NOTES: ${{ steps.set_vars.outputs.PR_RELEASE_NOTES }}
-      uses: ./.github/workflows/pr-state-job.yml
-      with:
-        variable_prefix: PR
-      secrets: inherit
-  
+    name: Inspect pull-request
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest 
+    uses: ./.github/workflows/pr-state-job.yml
+    secrets: inherit
   debug:
     name: Build (Enterprise-QA)
     needs: classify    
@@ -287,9 +271,9 @@ jobs:
   
   release:
     name: Build (Release)
-    needs: classify    
+    needs: classify
     if: |
-      needs.classify.outputs.PR_ID != '' && 
+      needs.classify.outputs.PR_ID != '' &&
       (contains(github.ref, 'refs/heads/release') || contains(github.ref, 'refs/heads/hotfix'))
     runs-on: macos-15 
     timeout-minutes: 180
@@ -307,12 +291,12 @@ jobs:
     name: Build (Build For Testing)
     needs: classify
     if: |
-      github.event.inputs.force_upload_simulator_build == 'true' || 
-      github.event.inputs.force_upload_saucelabs_build == 'true' || 
+      github.event.inputs.force_upload_simulator_build == 'true' ||
+      github.event.inputs.force_upload_saucelabs_build == 'true' ||
       (needs.classify.outputs.PR_ID != '' && github.ref == 'refs/heads/develop')
-    
     runs-on: macos-15
-    
+    timeout-minutes: 180
+
     env:
       XCUI_TEST_BUILD_PATH: ${{ github.workspace }}/derivedData/Build/Products/Debug-iphonesimulator/
 
@@ -323,6 +307,10 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           clean: true
+
+      - name: Install xcpretty
+        run: sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
+
       - name: Decrypt Secure Files
         working-directory: ${{ github.workspace }}/Costco/Signing
         env:
@@ -387,14 +375,13 @@ jobs:
           set -e
           echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
           sudo xcode-select -switch "/Applications/Xcode_${{ env.XCODE_VERSION }}.app"
-
+ 
           simulators=$(xcrun xctrace list devices 2>&1 | grep -i iphone | grep -i pro | grep -v "+")
-
           if [ -z "$simulators" ]; then
             echo "::error::No matching simulators found"
             exit 1
           fi
-
+ 
           count=$(echo "$simulators" | wc -l | tr -d '[:space:]')
           index=$(( count / 2 ))
           if [ "$index" -lt 1 ]; then
@@ -403,30 +390,31 @@ jobs:
 
           simulator=$(echo "$simulators" | sed -n "${index}p" | awk -F'[' '{print $1}' | xargs)
           device_name=$(echo "$simulator" | awk -F'(' '{print $1}' | sed 's/Simulator//' | xargs)
-
+ 
           if [ -z "$device_name" ]; then
             echo "::error::Failed to parse simulator name"
             exit 1
           fi
-
+ 
+          simulator_sdk=$(xcodebuild -showsdks | grep iphonesimulator | awk -F"-sdk" '{print $NF}' | xargs)
+ 
           echo "SIMULATOR=${device_name}" >> "$GITHUB_ENV"
-          echo "OS_VERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
-
+          echo "OSVERSION=${{ env.OS_VERSION }}" >> "$GITHUB_ENV"
+          echo "SIMULATOR_SDK=${simulator_sdk}" >> "$GITHUB_ENV"
+ 
           echo "Auto-selected iOS simulator: ${device_name}"
           echo "Setting iOS version: ${{ env.OS_VERSION }} .."
-
-      
+          echo "Auto-selected SDK: ${simulator_sdk}"
+ 
       - name: List Runtimes
         run: xcrun simctl list runtimes
       - name: Install Distributions
-        env:
-          SDK: ${{ env.SDK }}
         run: |
           #!/bin/bash
           set -e
           echo "Setting xcode version: ${{ env.XCODE_VERSION }}"
           sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
-          version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
+          version=$(echo "$SIMULATOR_SDK" | grep -oE '[0-9]+\.[0-9]+')
           echo "Checking for iOS runtime version: $version"
           if xcrun simctl list runtimes | grep -Eq "\b${version}\b"; then
             echo "Distribution SDK is already present"
@@ -436,47 +424,40 @@ jobs:
             xcodebuild -downloadPlatform iOS -buildVersion "$version"
             echo "Installed the distributions"
           fi
-
-      - name: Install xcpretty
-        run: sudo gem install xcpretty xcpretty-json-formatter xcpretty-travis-formatter
-
       - name: Build for testing
-        env:
-          GIT_SSH_COMMAND: ${{ env.GIT_SSH_COMMAND }}
-          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK }}
-          SSH_AGENT_PID: ${{ env.SSH_AGENT_PID }}
         run: |
           set -eo pipefail
           xcodebuild clean build-for-testing \
             -workspace "${{ github.workspace }}/Costco/Costco.xcworkspace" \
             -scheme "${{ env.SCHEME }}" \
             -configuration Debug \
-            -sdk "${{ env.SDK }}" \
+            -sdk "${{ env.SIMULATOR_SDK }}" \
             -derivedDataPath "${{ github.workspace }}/derivedData" \
             -destination "platform=iOS Simulator,name=${{ env.SIMULATOR }},OS=${{ env.OS_VERSION }}" \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
+ 
 
       - name: Archive Test Artifacts for AppCenter
         run: |
+          set -e
+          mkdir -p "${{ github.workspace }}/artifacts"
           cd "${{ env.XCUI_TEST_BUILD_PATH }}"
           zip -r "${{ github.workspace }}/artifacts/${{ github.run_number }}-TestBuild.zip" .
-          
-      # 3. Prepare SauceLabs artifact (replaces Bash@3)
-      - name: Prepare SauceLabs artifact
+
+      - name: Prepare SauceLabs Artifact
         run: |
           set -e
-          # Find the .app excluding the -Runner app
+          mkdir -p "${{ github.workspace }}/artifacts"
           app_path=$(find -L "${{ env.XCUI_TEST_BUILD_PATH }}" -name "*.app" 2>/dev/null | grep -iv "\-runner" | head -n 1)
-          
           app_dir=$(dirname "${app_path}")
           app_name=$(basename "${app_path}")
-          
+
           echo "Archiving for SauceLabs: ${app_name}"
           cd "${app_dir}"
           zip -r "${{ github.workspace }}/artifacts/CostcoDebug.zip" "${app_name}"
-          
-      - name: Publish build-test artifacts
+
+      - name: Publish Build-Test Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-test
