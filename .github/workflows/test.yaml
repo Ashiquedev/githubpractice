@@ -43,7 +43,6 @@ jobs:
             curl -sL https://firebase.tools/bin/linux/latest -o "$HOME/firebase"
             chmod +x "$HOME/firebase"
             echo "$HOME" >> $GITHUB_PATH
-            firebase --version
 
         - name: Verify Firebase
           run: firebase --version
