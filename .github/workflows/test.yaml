@@ -26,14 +26,14 @@ jobs:
       steps:
         - name: Setup Android SDK
           uses: android-actions/setup-android@v4
+        - name: Install build-tools with aapt
+          run: |
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0"
+
         - name: Package Validation (AAPT)
           shell: bash
           run: |
-            set -x
-            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" 2>/dev/null | sort -rV | head -1)
-            if [ -z "$AAPT" ]; then
-              AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null | sort -rV | head -1)
-            fi
+            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" | sort -rV | head -1)
             echo "Using: $AAPT"
 
 
