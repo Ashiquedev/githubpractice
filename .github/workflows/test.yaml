@@ -24,6 +24,15 @@ jobs:
         BRANCH_NAME: ${{ github.event.inputs.branch_name }}
         BUILD_NUMBER: ${{ github.run_number }}
       steps:
+        - name: Install Firebase Tools
+          run: |
+    
+            curl -sL https://firebase.tools/bin/linux/latest -o "$HOME/firebase"
+            chmod +x "$HOME/firebase"
+            echo "$HOME" >> $GITHUB_PATH
+
+        - name: Verify Firebase
+          run: firebase --version
         - name: Install Temurin JDK 17 Manually
           shell: bash
           run: |
