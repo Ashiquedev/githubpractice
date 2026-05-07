@@ -18,45 +18,37 @@ env:
 jobs:
   checkout:
       name: checkout
-      runs-on: macOS-15
+      runs-on: ubuntu-latest
       timeout-minutes: 180
       env:
         BRANCH_NAME: ${{ github.event.inputs.branch_name }}
         BUILD_NUMBER: ${{ github.run_number }}
       steps:
-        - name: Checkout Repo
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 1
-            fetch-tags: false
-            clean: true
-        - name: Set SDK
-          
+        - name: Install Temurin JDK 17 Manually
+          shell: bash
           run: |
-            set -e
-            echo "Setting xcode version to: ${{ env.XCODE_VERSION }} .."
-            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app 
-            _sdk="$(xcodebuild -showsdks | grep -i ios | grep -iv simulator | grep sdk | awk -F\"sdk\" '{print $NF}' | xargs || true)"
-            echo "SDK=${_sdk}" >> $GITHUB_ENV
-            echo "Detected SDK: $_sdk"
-            xcodebuild -version
-            xcrun simctl list runtimes
-        - name: Install Distributions
-          env:
-            SDK: ${{ env.SDK }}
-          run: |
-            echo 'Setting xcode version: ${{ env.XCODE_VERSION }}'
-            sudo xcode-select -switch /Applications/Xcode_${{ env.XCODE_VERSION }}.app
-            version=$(echo "$SDK" | grep -oE '[0-9]+\.[0-9]+')
-            echo "$version"
-            if xcrun simctl list runtimes | grep -Eq "\b${VERSION}\b"; then
-              echo "Distribution SDK is already present"
-            else
-              echo "Required SDK not available, Installing the verson ${_sdk}"
-              cpu_count=$(sysctl hw.ncpu | awk '{print $NF}')
-              xcodebuild -downloadPlatform iOS -buildVersion $(version)
-              echo "Installed the distributions "
-            fi
-        - name: Install GitHub CLI (if missing)
-          run: |
-              brew install gh
+            echo "=== Installing Temurin JDK 17 ==="
+
+            JAVA_DIR="$RUNNER_TEMP/java17"
+
+            rm -rf "$JAVA_DIR"
+
+            mkdir -p "$JAVA_DIR"
+
+            cd "$RUNNER_TEMP"
+
+            wget -q https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
+
+            tar -xzf OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
+
+            EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "jdk-17*" | head -n 1)
+
+            mv "$EXTRACTED_DIR"/* "$JAVA_DIR"
+
+            echo "JAVA_HOME=$JAVA_DIR" >> $GITHUB_ENV
+            echo "$JAVA_DIR/bin" >> $GITHUB_PATH
+
+            echo "=== Java Installed ==="
+
+            java -version
+        
