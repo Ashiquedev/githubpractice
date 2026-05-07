@@ -17,13 +17,24 @@ env:
 
 jobs:
   checkout:
-      name: checkout
+      name: test
       runs-on: ubuntu-latest
       timeout-minutes: 180
       env:
         BRANCH_NAME: ${{ github.event.inputs.branch_name }}
         BUILD_NUMBER: ${{ github.run_number }}
       steps:
+        - name: Package Validation (AAPT)
+          shell: bash
+          run: |
+            set -x
+            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" 2>/dev/null | sort -rV | head -1)
+            if [ -z "$AAPT" ]; then
+              AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null | sort -rV | head -1)
+            fi
+            echo "Using: $AAPT"
+
+
         - name: Install Firebase Tools
           run: |
     
