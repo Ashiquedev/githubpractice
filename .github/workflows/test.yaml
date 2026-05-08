@@ -1,105 +1,94 @@
-- stage: UnitTest
-    dependsOn: Build
-    jobs:
-      - job: UnitTest
-        displayName: Unit Test
+name: test
 
-        pool:
-          mobile-westus3-np-agent-pool
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: 'Costco iOS branch name'
+        required: true
+        default: 'develop'
+        type: string
+env:
+  BUILD_NUMBER: ${{ github.run_number }}
+  ENTERPRISE_TEAM_ID: 'TGWXEY4D6F'
+  APPSTORE_TEAM_ID: 'MCL67DL73Q'
+  XCODE_VERSION: '26.2'
 
-        variables:
-          build_configuration: ${{ parameters.configuration }}
+jobs:
+  test:
+      name: test
+      runs-on: ubuntu-latest
+      timeout-minutes: 180
+      env:
+        BRANCH_NAME: ${{ github.event.inputs.branch_name }}
+        BUILD_NUMBER: ${{ github.run_number }}
+      steps:
+        - name: Setup .NET 8
+          shell: bash
+          run: |
+            # Download and run the official .NET install script
+            curl -sL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+            chmod +x dotnet-install.sh
+            ./dotnet-install.sh --channel 8.0 --install-dir "$HOME/.dotnet"
 
-        steps:
-          - checkout: self
-            displayName: Code Checkout
-            persistCredentials: true
+            echo "$HOME/.dotnet" >> $GITHUB_PATH
+            echo "DOTNET_ROOT=$HOME/.dotnet" >> $GITHUB_ENV
 
-          - script: |
-              java -version
-            env:
-              JAVA_HOME: $(JAVA_HOME_17_X64)
+        - name: verify dotnet
+          run: |
+            dotnet --version
+            
+        - name: Setup Android SDK
+          uses: android-actions/setup-android@v4
+        - name: Install build-tools with aapt
+          run: |
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0"
 
-          - task: JavaToolInstaller@0
-            inputs:
-              versionSpec: '17'
-              jdkArchitectureOption: 'x64'
-              jdkSourceOption: 'PreInstalled'
+        - name: Package Validation (AAPT)
+          shell: bash
+          run: |
+            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" | sort -rV | head -1)
 
-          - task: Bash@3
-            displayName: Set global gradle options
-            name: gradle
-            inputs:
-              targetType: 'inline'
-              script: |
-                set -x
-                echo 'setting gradle options ..'
-                gradle_options="\
-                  --refresh-dependencies \
-                  --configure-on-demand \
-                  --parallel \
-                  --daemon \
-                  --max-workers $(grep -c ^processor /proc/cpuinfo) \
-                  -Dmaven.wagon.http.pool=false \
-                  -Dhttp.keepAlive=false \
-                  -Dhttp.socketTimeout=60000 \
-                  -Dhttp.connectionTimeout=60000 \
-                  -Dorg.gradle.jvmargs=-Xmx7g \
-                  -Dorg.gradle.console=verbose \
-                  -DaliasPassword=$(keystore_password) \
-                  -DkeyStorePassword=$(keystore_password) \
-                  -DUSBC_BROWSER_STACK_LIVE_KEY=$(usbc_browser_live_key) \
-                  -DUSBC_BROWSER_STACK_LIVE_TOKEN=$(usbc_browser_live_token) \
-                  -DUSBC_BROWSER_STACK_MOBILE_PREVIEW_KEY=$(usbc_browser_mobile_preview_key) \
-                  -DUSBC_BROWSER_STACK_MOBILE_PREVIEW_TOKEN=$(usbc_browser_mobile_preview_token) \
-                  -DCABC_BROWSER_STACK_LIVE_KEY=$(cabc_browser_live_key) \
-                  -DCABC_BROWSER_STACK_LIVE_TOKEN=$(cabc_browser_live_token) \
-                  -DCABC_BROWSER_STACK_MOBILE_PREVIEW_KEY=$(cabc_browser_mobile_preview_key) \
-                  -DCABC_BROWSER_STACK_MOBILE_PREVIEW_TOKEN=$(cabc_browser_mobile_preview_token) \
-                  -DDEV_BROWSER_STACK_LIVE_KEY=$(dev_browser_live_key) \
-                  -DDEV_BROWSER_STACK_LIVE_TOKEN=$(dev_browser_live_token) \
-                  -DDEV_BROWSER_STACK_MOBILE_PREVIEW_KEY=$(dev_browser_mobile_preview_key) \
-                  -DDEV_BROWSER_STACK_MOBILE_PREVIEW_TOKEN=$(dev_browser_mobile_preview_token) \
-                  -DDEV_BROWSER_STACK_ANDROID_TEST_KEY=$(dev_browser_android_key) \
-                  -DDEV_BROWSER_STACK_ANDROID_TEST_TOKEN=$(dev_browser_android_token) \
-                  -DTRAINING_STACK_MOBILE_PREVIEW_KEY=$(training_stack_mobile_preview_key) \
-                  -DTRAINING_STACK_MOBILE_PREVIEW_TOKEN=$(training_stack_mobile_preview_token) \
-                  -DTRAINING_STACK_LIVE_KEY=$(training_stack_live_key) \
-                  -DTRAINING_STACK_LIVE_TOKEN=$(training_stack_live_token) \
-                  -DWAREHOUSE_CONFIGURATION_KEY=$(warehouse_configuration_key) \
-                  -DWAREHOUSE_CONFIGURATION_TOKEN=$(warehouse_configuration_token) \
-                  -DBranch=\"$(Build.SourceBranch)\""
 
-                # inject gradle options
-                echo "##vso[task.setvariable variable=GRADLE_OPTS]$gradle_options"
 
-          - task: Bash@3
-            displayName: Set build tasks
-            inputs:
-              targetType: 'inline'
-              script: |
-                #!/bin/bash
-                echo 'setting build tasks ..'
-                if [[ $(build_configuration) == "release/debug" ]]; then
-                  tasks=('test')
-                  echo 'test (debug and release) task set'
-                elif [[ $(build_configuration) == "release" ]]; then
-                  tasks=('testReleaseUnitTest')
-                  echo 'testReleaseUnitTest task set'
-                else
-                  tasks=('testDebugUnitTest')
-                  echo 'testDebugUnitTest task set'
-                fi
-                echo "##vso[task.setvariable variable=GRADLE_TASKS]$(echo ${tasks[@]}|xargs)"
 
-          # execute tests
-          - task: Gradle@3
-            displayName: Unit Tests
-            enabled: true
-            inputs:
-              testRunTitle: 'Build: $(build_number)'
-              gradleWrapperFile: 'gradlew'
-              options: '$(GRADLE_OPTS)'
-              publishJUnitResults: true
-              testResultsFiles: '**/TEST-*.xml'
-              tasks: '$(GRADLE_TASKS)'
+            echo "Using: $AAPT"
+
+
+        - name: Install Firebase Tools
+          run: |
+    
+            curl -sL https://firebase.tools/bin/linux/latest -o "$HOME/firebase"
+            chmod +x "$HOME/firebase"
+            echo "$HOME" >> $GITHUB_PATH
+
+        - name: Verify Firebase
+          run: firebase --version
+        - name: Install Temurin JDK 17 Manually
+          shell: bash
+          run: |
+            echo "=== Installing Temurin JDK 17 ==="
+
+            JAVA_DIR="$RUNNER_TEMP/java17"
+
+            rm -rf "$JAVA_DIR"
+
+            mkdir -p "$JAVA_DIR"
+
+            cd "$RUNNER_TEMP"
+
+            wget -q https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
+
+            tar -xzf OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
+
+            EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "jdk-17*" | head -n 1)
+
+            mv "$EXTRACTED_DIR"/* "$JAVA_DIR"
+
+            echo "JAVA_HOME=$JAVA_DIR" >> $GITHUB_ENV
+            echo "$JAVA_DIR/bin" >> $GITHUB_PATH
+
+            echo "=== Java Installed ==="
+
+            java -version
