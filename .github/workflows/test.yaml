@@ -20,75 +20,22 @@ jobs:
       name: test
       runs-on: ubuntu-latest
       timeout-minutes: 180
-      env:
-        BRANCH_NAME: ${{ github.event.inputs.branch_name }}
-        BUILD_NUMBER: ${{ github.run_number }}
       steps:
-        - name: Setup .NET 8
-          shell: bash
-          run: |
-            # Download and run the official .NET install script
-            curl -sL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
-            chmod +x dotnet-install.sh
-            ./dotnet-install.sh --channel 8.0 --install-dir "$HOME/.dotnet"
-
-            echo "$HOME/.dotnet" >> $GITHUB_PATH
-            echo "DOTNET_ROOT=$HOME/.dotnet" >> $GITHUB_ENV
-
-        - name: verify dotnet
-          run: |
-            dotnet --version
-            
-        - name: Setup Android SDK
-          uses: android-actions/setup-android@v4
-        - name: Install build-tools with aapt
-          run: |
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0"
-
-        - name: Package Validation (AAPT)
-          shell: bash
-          run: |
-            AAPT=$(find "$ANDROID_HOME/build-tools" -name "aapt" | sort -rV | head -1)
-
-
-
-
-            echo "Using: $AAPT"
-
-
-        - name: Install Firebase Tools
-          run: |
-    
-            curl -sL https://firebase.tools/bin/linux/latest -o "$HOME/firebase"
-            chmod +x "$HOME/firebase"
-            echo "$HOME" >> $GITHUB_PATH
-
-        - name: Verify Firebase
-          run: firebase --version
-        - name: Install Temurin JDK 17 Manually
-          shell: bash
-          run: |
-            echo "=== Installing Temurin JDK 17 ==="
-
-            JAVA_DIR="$RUNNER_TEMP/java17"
-
-            rm -rf "$JAVA_DIR"
-
-            mkdir -p "$JAVA_DIR"
-
-            cd "$RUNNER_TEMP"
-
-            wget -q https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
-
-            tar -xzf OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz
-
-            EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "jdk-17*" | head -n 1)
-
-            mv "$EXTRACTED_DIR"/* "$JAVA_DIR"
-
-            echo "JAVA_HOME=$JAVA_DIR" >> $GITHUB_ENV
-            echo "$JAVA_DIR/bin" >> $GITHUB_PATH
-
-            echo "=== Java Installed ==="
-
-            java -version
+      - name: Set build version
+        id: version
+        env:
+          MAJOR_MINOR: ${{ vars.MAJOR_MINOR || '26.6.1' }}
+          ADO_BUILD_OFFSET: ${{ vars.ADO_BUILD_OFFSET || '65000' }}          
+        run: |
+          #!/bin/bash
+          set -e
+          version=""
+          BUILD_NUMBER=$(( ADO_BUILD_OFFSET + ${{ github.run_number }} ))
+          version="${MAJOR_MINOR}.${BUILD_NUMBER}"
+          echo "APK version: $version"
+          echo "Build number: ${BUILD_NUMBER}"
+          echo "APK_VERSION=$version" >> $GITHUB_OUTPUT
+          echo "APK_VERSION=$version" >> $GITHUB_ENV
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          echo "$version" > "$RUNNER_TEMP/artifacts/apk_version"
+          
