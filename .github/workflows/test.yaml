@@ -15,27 +15,42 @@ env:
   APPSTORE_TEAM_ID: 'MCL67DL73Q'
   XCODE_VERSION: '26.2'
 
+
 jobs:
-  test:
-      name: test
-      runs-on: ubuntu-latest
-      timeout-minutes: 180
-      steps:
-      - name: Set build version
-        id: version
-        env:
-          MAJOR_MINOR: ${{ vars.MAJOR_MINOR || '26.6.1' }}
-          ADO_BUILD_OFFSET: ${{ vars.ADO_BUILD_OFFSET || '65000' }}          
-        run: |
-          #!/bin/bash
-          set -e
-          version=""
-          BUILD_NUMBER=$(( ADO_BUILD_OFFSET + ${{ github.run_number }} ))
-          version="${MAJOR_MINOR}.${BUILD_NUMBER}"
-          echo "APK version: $version"
-          echo "Build number: ${BUILD_NUMBER}"
-          echo "APK_VERSION=$version" >> $GITHUB_OUTPUT
-          echo "APK_VERSION=$version" >> $GITHUB_ENV
-          mkdir -p "$RUNNER_TEMP/artifacts"
-          echo "$version" > "$RUNNER_TEMP/artifacts/apk_version"
+ reset-run-number:
+   runs-on: ubuntu-latest
+   outputs:
+     run-number: ${{ steps.get-build.outputs.build-number }}
+   steps:
+     - name: Get build number
+       id: get-build
+       uses: mlilback/build-number@v1
+       with:
+         base: +65000
+         run-id: ${{ github.run_number }}
+ use-run-number:
+   needs: reset-run-number
+   runs-on: ubuntu-latest
+   steps:
+     - name: Print new number
+       run: |
+        echo "Number: ${{ needs.reset-run-number.outputs.run-number }}"
+     
+     - name: Set build version
+       id: version
+       env:
+         MAJOR_MINOR: ${{ vars.MAJOR_MINOR || '26.6.1' }}
+         ADO_BUILD_OFFSET: ${{ vars.ADO_BUILD_OFFSET || '65000' }}          
+       run: |
+         #!/bin/bash
+         set -e
+         version=""
+         BUILD_NUMBER=$(( ADO_BUILD_OFFSET + ${{ github.run_number }} ))
+         version="${MAJOR_MINOR}.${BUILD_NUMBER}"
+         echo "APK version: $version"
+         echo "Build number: ${BUILD_NUMBER}"
+         echo "APK_VERSION=$version" >> $GITHUB_OUTPUT
+         echo "APK_VERSION=$version" >> $GITHUB_ENV
+         mkdir -p "$RUNNER_TEMP/artifacts"
+         echo "$version" > "$RUNNER_TEMP/artifacts/apk_version"
           
